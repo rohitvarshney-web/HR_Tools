@@ -245,39 +245,58 @@ const API = process.env.REACT_APP_API_URL || window.location.origin;
   }
 
   // NEW: submit to backend (multipart/form-data)
-  async function handlePublicSubmit(e) {
-    e.preventDefault();
-    const formEl = e.target;
-    const openingId = publicView.openingId;
-    const source = publicView.source || 'unknown';
-    const fd = new FormData();
+async function handlePublicSubmit(e) {
+  e.preventDefault();
+  const formEl = e.target;
+  const openingId = publicView.openingId;
+  const source = publicView.source || 'unknown';
+  const fd = new FormData();
 
-    for (let i = 0; i < formEl.elements.length; i++) {
-      const el = formEl.elements[i];
-      if (!el.name) continue;
-      if (el.type === 'file') {
-        if (el.files && el.files[0]) fd.append('resume', el.files[0], el.files[0].name);
-      } else if (el.type === 'checkbox') {
-        if (el.checked) fd.append(el.name, el.value);
-      } else {
-        fd.append(el.name, el.value);
+  for (let i = 0; i < formEl.elements.length; i++) {
+    const el = formEl.elements[i];
+    if (!el.name) continue;
+    if (el.type === 'file') {
+      if (el.files && el.files[0]) fd.append('resume', el.files[0], el.files[0].name);
+    } else if (el.type === 'checkbox') {
+      if (el.checked) fd.append(el.name, el.value);
+    } else {
+      fd.append(el.name, el.value);
+    }
+  }
+
+  try {
+    const resp = await fetch(`${API}/api/apply?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(source)}`, {
+      method: 'POST',
+      body: fd
+    });
+
+    // read raw text first (prevent json() from throwing on empty body)
+    const text = await resp.text().catch(() => null);
+    let data = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch (err) {
+        // the server returned something but it's not valid JSON
+        console.warn('Non-JSON response from server:', text);
       }
     }
 
-    try {
-      const resp = await fetch(`${API}/api/apply?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(source)}`, {
-        method: 'POST',
-        body: fd
-      });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || 'Submission failed');
-      setPublicView(prev => ({ ...prev, submitted: true, resumeLink: data.resumeLink }));
-      alert('Application submitted successfully!');
-    } catch (err) {
-      console.error('Submit error', err);
-      alert('Submission failed: ' + (err.message || 'unknown error'));
+    if (!resp.ok) {
+      const message = data?.error || data?.message || `Server returned ${resp.status}`;
+      throw new Error(message);
     }
+
+    // success: prefer resumeLink if provided, otherwise show raw body
+    const resumeLink = data?.resumeLink || data?.link || null;
+    setPublicView(prev => ({ ...prev, submitted: true, resumeLink }));
+    alert('Application submitted successfully!' + (resumeLink ? ` Resume: ${resumeLink}` : ''));
+  } catch (err) {
+    console.error('Submit error', err);
+    alert('Submission failed: ' + (err.message || 'unknown error'));
   }
+}
+
 
   // helper for public form layout mapping by keywords
   const currentSchema = publicView ? (forms[publicView.openingId]?.questions || []) : [];
