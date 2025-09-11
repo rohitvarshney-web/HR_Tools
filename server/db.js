@@ -1,7 +1,8 @@
 // server/db.js
-import Database from 'better-sqlite3';
-import path from 'path';
-const db = new Database(path.resolve('server', 'data.db'));
+const path = require('path');
+const Database = require('better-sqlite3');
+const dbPath = path.resolve(__dirname, 'data.db');
+const db = new Database(dbPath);
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
@@ -32,4 +33,4 @@ CREATE TABLE IF NOT EXISTS responses (
 );
 `);
 
-export default db;
+module.exports = db;
