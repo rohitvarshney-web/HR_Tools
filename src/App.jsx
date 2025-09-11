@@ -39,7 +39,9 @@ const QUESTION_TYPES = [
 ];
 
 export default function App() {
-  const API = process.env.REACT_APP_API_URL || 'http://localhost:4000';
+  // Prefer the environment variable, otherwise use the current origin (deployed host).
+// This avoids accidentally calling localhost after deploy.
+const API = process.env.REACT_APP_API_URL || window.location.origin;
 
   const [openings, setOpenings] = useState([]);
   const [activeTab, setActiveTab] = useState("overview");
