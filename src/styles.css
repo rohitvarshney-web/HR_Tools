@@ -1,0 +1,2 @@
+/* Keep small global rules. Tailwind is loaded via CDN in index.html */
+body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
