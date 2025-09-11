@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { v4 as uuidv4 } from "uuid";
 
 /* Small inline icons component */
@@ -14,7 +14,6 @@ const Icon = ({ name, className = "w-5 h-5 inline-block" }) => {
   return icons[name] || null;
 };
 
-/* Template bank questions */
 const templateQuestions = [
   { id: uuidv4(), type: "short_text", label: "Full name", required: true },
   { id: uuidv4(), type: "email", label: "Email address", required: true },
@@ -40,13 +39,18 @@ const QUESTION_TYPES = [
 ];
 
 export default function App() {
+  const API = process.env.REACT_APP_API_URL || 'http://localhost:4000';
+
   const [openings, setOpenings] = useState([]);
   const [activeTab, setActiveTab] = useState("overview");
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newOpening, setNewOpening] = useState({ title: "", location: "Delhi", department: "", preferredSources: [], durationMins: 30 });
-  const [forms, setForms] = useState({}); // openingId -> { questions: [], meta: {} }
+  const [forms, setForms] = useState({});
   const [responses, setResponses] = useState([]);
+
+  // auth / user
+  const [user, setUser] = useState(null);
 
   // custom question modal
   const [showCustomModal, setShowCustomModal] = useState(false);
@@ -58,21 +62,105 @@ export default function App() {
   const [editingOpening, setEditingOpening] = useState(null);
 
   // public form modal
-  const [publicView, setPublicView] = useState(null); // { openingId, source, submitted }
+  const [publicView, setPublicView] = useState(null); // { openingId, source, submitted, resumeLink }
+
+  useEffect(() => {
+    // Check if OAuth redirected back with token
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('token');
+    if (token) {
+      localStorage.setItem('token', token);
+      params.delete('token');
+      const newUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+      window.history.replaceState({}, '', newUrl);
+      fetchProfile(token);
+    } else {
+      const existing = localStorage.getItem('token');
+      if (existing) fetchProfile(existing);
+    }
+    // If not signed in, keep local openings (pre-existing)
+  }, []);
+
+  // fetch logged-in user
+  async function fetchProfile(token) {
+    try {
+      const t = token || localStorage.getItem('token');
+      if (!t) return setUser(null);
+      const res = await fetch(`${API}/api/me`, { headers: { Authorization: `Bearer ${t}` }});
+      if (!res.ok) { localStorage.removeItem('token'); setUser(null); return; }
+      const u = await res.json();
+      setUser(u);
+      // load server-side openings & responses
+      loadOpenings();
+      loadResponses();
+    } catch (err) {
+      console.error('fetchProfile', err);
+      setUser(null);
+    }
+  }
+
+  async function apiFetch(path, opts = {}) {
+    const token = localStorage.getItem('token');
+    const headers = opts.headers || {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(`${API}${path}`, { ...opts, headers });
+    const json = await res.json().catch(()=>null);
+    if (!res.ok) throw { status: res.status, body: json };
+    return json;
+  }
+
+  async function loadOpenings() {
+    try {
+      if (!localStorage.getItem('token')) return;
+      const rows = await apiFetch('/api/openings');
+      setOpenings(rows);
+    } catch (err) {
+      console.error('loadOpenings', err);
+    }
+  }
+
+  async function loadResponses() {
+    try {
+      if (!localStorage.getItem('token')) return;
+      const rows = await apiFetch('/api/responses');
+      setResponses(rows);
+    } catch (err) {
+      console.error('loadResponses', err);
+    }
+  }
 
   function openCreate() {
     setNewOpening({ title: "", location: "Delhi", department: "", preferredSources: [], durationMins: 30 });
     setShowCreate(true);
   }
 
-  function handleCreateOpening(e) {
+  async function handleCreateOpening(e) {
     e.preventDefault();
-    setCreating(true);
-    const created = { id: `op_${Date.now()}`, ...newOpening, createdAt: new Date().toISOString().split("T")[0] };
-    setOpenings((s) => [created, ...s]);
-    setForms((f) => ({ ...f, [created.id]: { questions: templateQuestions.slice(0, 5).map(q => ({ ...q, id: uuidv4() })), meta: null } }));
-    setShowCreate(false);
-    setCreating(false);
+    const payload = {
+      title: newOpening.title,
+      location: newOpening.location,
+      department: newOpening.department,
+      preferredSources: newOpening.preferredSources || [],
+      durationMins: newOpening.durationMins,
+    };
+
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        const created = { id: `op_${Date.now()}`, ...payload, createdAt: new Date().toISOString() };
+        setOpenings(s => [created, ...s]);
+        setForms(f => ({ ...f, [created.id]: { questions: templateQuestions.slice(0,5).map(q => ({...q, id: uuidv4()})), meta: null } }));
+      } else {
+        const res = await apiFetch('/api/openings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        const created = { id: res.id, ...payload, createdAt: new Date().toISOString() };
+        setOpenings(s => [created, ...s]);
+        setForms(f => ({ ...f, [created.id]: { questions: templateQuestions.slice(0,5).map(q => ({...q, id: uuidv4()})), meta: null } }));
+      }
+      setShowCreate(false);
+    } catch (err) {
+      console.error('create opening', err);
+      alert('Could not create opening: ' + (err?.body?.error || err.message || 'unknown'));
+    }
   }
 
   function handleEditOpeningOpen(op) {
@@ -86,10 +174,19 @@ export default function App() {
     setShowEdit(false);
   }
 
-  function handleDeleteOpening(id) {
+  async function handleDeleteOpening(id) {
     if (!confirm("Delete this opening?")) return;
-    setOpenings((s) => s.filter(op => op.id !== id));
-    setForms((f) => { const copy = { ...f }; delete copy[id]; return copy; });
+    try {
+      if (localStorage.getItem('token')) {
+        await apiFetch(`/api/openings/${id}`, { method: 'DELETE' });
+        setOpenings(s => s.filter(op => op.id !== id));
+      } else {
+        setOpenings(s => s.filter(op => op.id !== id));
+        setForms(f => { const copy = { ...f }; delete copy[id]; return copy; });
+      }
+    } catch (err) {
+      alert('Delete failed: ' + (err?.body?.error || err.message));
+    }
   }
 
   function addQuestion(openingId, q) {
@@ -131,9 +228,9 @@ export default function App() {
     const sources = (opening.preferredSources && opening.preferredSources.length) ? opening.preferredSources : ["generic"];
     const shareLinks = {};
     sources.forEach(src => {
-      shareLinks[src] = `https://your-app.local/apply/${formId}?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(src)}`;
+      shareLinks[src] = `${window.location.origin}/apply/${formId}?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(src)}`;
     });
-    const generic = `https://your-app.local/apply/${formId}?opening=${encodeURIComponent(openingId)}`;
+    const generic = `${window.location.origin}/apply/${formId}?opening=${encodeURIComponent(openingId)}`;
     setForms((f) => ({ ...f, [openingId]: { ...(f[openingId] || { questions: [] }), questions: f[openingId]?.questions || [], meta: { formId, isPublished: true, publishedAt: new Date().toISOString(), shareLinks, genericLink: generic } } }));
   }
 
@@ -145,27 +242,39 @@ export default function App() {
     setPublicView({ openingId, source, submitted: false });
   }
 
-  function handlePublicSubmit(e) {
+  // NEW: submit to backend (multipart/form-data)
+  async function handlePublicSubmit(e) {
     e.preventDefault();
     const formEl = e.target;
     const openingId = publicView.openingId;
-    const schema = forms[openingId];
-    if (!schema) return;
-    const answers = {};
-    schema.questions.forEach(q => {
-      const el = formEl.elements[q.id];
-      if (!el) return;
-      if (q.type === "checkboxes") {
-        answers[q.id] = Array.from(formEl.querySelectorAll(`[name="${q.id}"]:checked`)).map(i => i.value);
-      } else if (q.type === "file") {
-        answers[q.id] = el.files && el.files[0] ? el.files[0].name : null;
+    const source = publicView.source || 'unknown';
+    const fd = new FormData();
+
+    for (let i = 0; i < formEl.elements.length; i++) {
+      const el = formEl.elements[i];
+      if (!el.name) continue;
+      if (el.type === 'file') {
+        if (el.files && el.files[0]) fd.append('resume', el.files[0], el.files[0].name);
+      } else if (el.type === 'checkbox') {
+        if (el.checked) fd.append(el.name, el.value);
       } else {
-        answers[q.id] = el.value;
+        fd.append(el.name, el.value);
       }
-    });
-    const resp = { id: `resp_${Date.now()}`, openingId, formId: schema.meta?.formId || null, answers, source: publicView.source || "unknown", createdAt: new Date().toISOString() };
-    setResponses(r => [resp, ...r]);
-    setPublicView(prev => ({ ...prev, submitted: true }));
+    }
+
+    try {
+      const resp = await fetch(`${API}/api/apply?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(source)}`, {
+        method: 'POST',
+        body: fd
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'Submission failed');
+      setPublicView(prev => ({ ...prev, submitted: true, resumeLink: data.resumeLink }));
+      alert('Application submitted successfully!');
+    } catch (err) {
+      console.error('Submit error', err);
+      alert('Submission failed: ' + (err.message || 'unknown error'));
+    }
   }
 
   // helper for public form layout mapping by keywords
@@ -180,13 +289,26 @@ export default function App() {
       {/* Sidebar */}
       <aside className="w-64 bg-gray-900 text-gray-100 p-6 flex flex-col justify-between">
         <div>
+          {/* SIGN IN AREA */}
           <div className="flex items-center gap-3 mb-6">
             <div className="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center font-bold">SV</div>
             <div>
               <div className="text-sm font-semibold">StampMyVisa</div>
-              <div className="text-xs opacity-80">HR Admin</div>
+              {user ? (
+                <>
+                  <div className="text-xs opacity-80">{user.email} <span className="text-xs text-blue-300">({user.role})</span></div>
+                  <div className="mt-1">
+                    <button onClick={() => { localStorage.removeItem('token'); setUser(null); }} className="text-xs text-red-400">Sign out</button>
+                  </div>
+                </>
+              ) : (
+                <div className="text-xs opacity-80">
+                  <a href={`${API}/auth/google`} className="text-sm text-blue-300">Sign in with Google</a>
+                </div>
+              )}
             </div>
           </div>
+
           <nav className="space-y-2">
             <div onClick={() => setActiveTab("overview")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'overview' ? 'bg-gray-800' : ''}`}>{<Icon name="menu" />} Overview</div>
             <div onClick={() => setActiveTab("jobs")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'jobs' ? 'bg-gray-800' : ''}`}>Jobs</div>
@@ -195,12 +317,12 @@ export default function App() {
         </div>
       </aside>
 
-      {/* Main content */}
+      {/* Main content (unchanged visual layout) */}
       <main className="flex-1 p-8 overflow-auto">
         {activeTab === "overview" && (
           <>
             <h1 className="text-2xl font-semibold mb-4">Overview</h1>
-
+            {/* ... same overview UI as before ... */}
             <div className="grid grid-cols-3 gap-6 mb-6">
               <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
                 <div className="flex justify-between items-center mb-4">
@@ -376,7 +498,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Create modal */}
+      {/* Modals (create/edit/custom/public form) — unchanged UI, ensure resume input name is "resume" */}
       {showCreate && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-[720px] shadow-xl">
@@ -427,7 +549,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Edit modal */}
       {showEdit && editingOpening && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-[720px] shadow-xl">
@@ -478,7 +599,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Custom question modal */}
       {showCustomModal && (
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-[560px] shadow-xl">
@@ -516,7 +636,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Public form modal (styled like your screenshot) */}
       {publicView && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-[760px] max-h-[90vh] overflow-auto shadow-xl">
@@ -526,7 +645,6 @@ export default function App() {
                 <div className="text-sm text-gray-500 mb-4">Fields with <span className="text-red-500">*</span> are mandatory.</div>
 
                 <form onSubmit={handlePublicSubmit} className="space-y-6">
-                  {/* Full name */}
                   {(() => {
                     const q = findQ("full name") || findQ("name");
                     if (!q) return null;
@@ -538,7 +656,6 @@ export default function App() {
                     );
                   })()}
 
-                  {/* Profile picture drop zone */}
                   {(() => {
                     const q = findQ("profile") || findQ("picture") || findQ("photo") || findQ("profile picture");
                     if (!q) return null;
@@ -553,13 +670,13 @@ export default function App() {
                               <div className="text-xs text-gray-400 mt-1">Only JPG, PNG are allowed — up to 2MB</div>
                             </div>
                           </div>
-                          <input type="file" name={q.id} className="hidden" />
+                          {/* ENSURE resume input uses name="resume" */}
+                          <input type="file" name="resume" className="hidden" />
                         </label>
                       </div>
                     );
                   })()}
 
-                  {/* Birthdate + Country */}
                   <div className="grid grid-cols-2 gap-4">
                     {(() => {
                       const q1 = findQ("birth") || findQ("date");
@@ -589,7 +706,6 @@ export default function App() {
                     })()}
                   </div>
 
-                  {/* Mother's name */}
                   {(() => {
                     const q = findQ("mother");
                     if (!q) return null;
@@ -601,7 +717,6 @@ export default function App() {
                     );
                   })()}
 
-                  {/* Demographic two-column grid */}
                   <div className="grid grid-cols-2 gap-4">
                     {(() => {
                       const items = [
@@ -628,7 +743,6 @@ export default function App() {
                     })()}
                   </div>
 
-                  {/* Remaining questions */}
                   {currentSchema.filter(q => {
                     const lower = (q.label || "").toLowerCase();
                     return !["name","full name","profile","picture","photo","birth","date","country","mother","gender","color","race","marital","special needs","state","city"].some(k => lower.includes(k));
@@ -649,7 +763,6 @@ export default function App() {
                     </div>
                   ))}
 
-                  {/* Navigation */}
                   <div className="flex items-center justify-between mt-4">
                     <button type="button" onClick={() => setPublicView(null)} className="px-4 py-2 border rounded-md text-sm">← BACK</button>
                     <button type="submit" className="px-6 py-2 bg-blue-600 text-white rounded-md text-sm">NEXT →</button>
