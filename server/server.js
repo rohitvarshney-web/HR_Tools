@@ -1,7 +1,8 @@
-// server.js (updated)
+// server.js (Mongo-enabled with file fallback)
 // Backend: OAuth (Google), file upload -> Drive, append -> Google Sheets,
 // JSON file persistence for openings -> server_data/openings.json
 // and forms -> server_data/forms.json; existing data.json kept for responses/users.
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -12,6 +13,8 @@ const { google } = require('googleapis');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const stream = require('stream');
+
+const { MongoClient } = require('mongodb');
 
 const app = express();
 app.use(cors());
@@ -223,7 +226,174 @@ if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET
   console.warn('Google OAuth not configured: GOOGLE_OAUTH_CLIENT_ID/SECRET missing');
 }
 
-// OAuth routes (unchanged)
+// ---------------------------
+// MongoDB connection + helpers
+// ---------------------------
+const MONGO_URI = process.env.MONGO_URI || null;
+const MONGO_DB_NAME = process.env.MONGO_DB_NAME || 'hrtool';
+let mongoClient = null;
+let db = null;
+
+async function connectMongo() {
+  if (!MONGO_URI) {
+    console.log('MONGO_URI not set — skipping MongoDB connection');
+    return null;
+  }
+  if (db) return db;
+  try {
+    mongoClient = new MongoClient(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true });
+    await mongoClient.connect();
+    db = mongoClient.db(MONGO_DB_NAME);
+    console.log('✅ Connected to MongoDB:', db.databaseName);
+    // ensure indexes
+    try { await db.collection('openings').createIndex({ id: 1 }, { unique: true, sparse: true }); } catch (e) {}
+    try { await db.collection('forms').createIndex({ id: 1 }, { unique: true, sparse: true }); } catch (e) {}
+    try { await db.collection('responses').createIndex({ id: 1 }, { unique: true, sparse: true }); } catch (e) {}
+    return db;
+  } catch (err) {
+    console.error('Failed to connect to MongoDB:', err && err.message);
+    // keep db null and allow fallback to file system
+    db = null;
+    throw err;
+  }
+}
+
+// Helper: normalize doc (strip _id)
+function normalizeDoc(doc) {
+  if (!doc) return doc;
+  const copy = { ...doc };
+  delete copy._id;
+  return copy;
+}
+
+// OPENINGS store helpers
+async function listOpeningsFromStore() {
+  if (db) {
+    const rows = await db.collection('openings').find({}).sort({ createdAt: -1 }).toArray();
+    return rows.map(normalizeDoc);
+  }
+  return readJsonFile(OPENINGS_FILE, []);
+}
+async function getOpeningFromStore(id) {
+  if (db) {
+    const doc = await db.collection('openings').findOne({ id });
+    return normalizeDoc(doc);
+  }
+  const arr = readJsonFile(OPENINGS_FILE, []);
+  return arr.find(o => o.id === id);
+}
+async function createOpeningInStore(op) {
+  if (db) {
+    await db.collection('openings').insertOne(op);
+    return op;
+  }
+  const arr = readJsonFile(OPENINGS_FILE, []);
+  arr.unshift(op);
+  writeJsonFileAtomic(OPENINGS_FILE, arr);
+  return op;
+}
+async function updateOpeningInStore(id, fields) {
+  if (db) {
+    await db.collection('openings').updateOne({ id }, { $set: fields });
+    const doc = await db.collection('openings').findOne({ id });
+    return normalizeDoc(doc);
+  }
+  const arr = readJsonFile(OPENINGS_FILE, []);
+  const idx = arr.findIndex(o => o.id === id);
+  if (idx === -1) return null;
+  arr[idx] = { ...arr[idx], ...fields };
+  writeJsonFileAtomic(OPENINGS_FILE, arr);
+  return arr[idx];
+}
+async function deleteOpeningInStore(id) {
+  // remove opening + cascade forms + responses (both DB & file)
+  let removed = 0;
+  if (db) {
+    const res = await db.collection('openings').deleteOne({ id });
+    removed = res.deletedCount || 0;
+    // delete forms in DB
+    const formRes = await db.collection('forms').deleteMany({ openingId: id });
+    // delete responses in DB if present
+    await db.collection('responses').deleteMany({ openingId: id });
+  } else {
+    const arr = readJsonFile(OPENINGS_FILE, []);
+    const newArr = arr.filter(o => o.id !== id);
+    removed = arr.length - newArr.length;
+    writeJsonFileAtomic(OPENINGS_FILE, newArr);
+  }
+
+  // cascade forms in file storage too (if any)
+  const forms = readJsonFile(FORMS_FILE, []);
+  const newForms = forms.filter(f => f.openingId !== id);
+  const deletedFormsCount = forms.length - newForms.length;
+  if (deletedFormsCount > 0) writeJsonFileAtomic(FORMS_FILE, newForms);
+
+  // also delete legacy responses in data.json
+  const data = readData();
+  data.responses = (data.responses || []).filter(r => r.openingId !== id);
+  writeData(data);
+
+  return { ok: true, removedOpenings: removed, deletedFormsCount };
+}
+
+// FORMS store helpers
+async function listFormsFromStore(openingId) {
+  if (db) {
+    const q = openingId ? { openingId } : {};
+    const rows = await db.collection('forms').find(q).toArray();
+    return rows.map(normalizeDoc);
+  }
+  const arr = readJsonFile(FORMS_FILE, []);
+  return openingId ? arr.filter(f => f.openingId === openingId) : arr;
+}
+async function getFormFromStore(id) {
+  if (db) {
+    const doc = await db.collection('forms').findOne({ id });
+    return normalizeDoc(doc);
+  }
+  const arr = readJsonFile(FORMS_FILE, []);
+  return arr.find(f => f.id === id);
+}
+async function createFormInStore(form) {
+  if (db) {
+    await db.collection('forms').insertOne(form);
+    return form;
+  }
+  const arr = readJsonFile(FORMS_FILE, []);
+  arr.push(form);
+  writeJsonFileAtomic(FORMS_FILE, arr);
+  return form;
+}
+async function updateFormInStore(id, patch) {
+  if (db) {
+    await db.collection('forms').updateOne({ id }, { $set: patch });
+    const doc = await db.collection('forms').findOne({ id });
+    return normalizeDoc(doc);
+  }
+  const arr = readJsonFile(FORMS_FILE, []);
+  const idx = arr.findIndex(f => f.id === id);
+  if (idx === -1) return null;
+  arr[idx] = { ...arr[idx], ...patch };
+  writeJsonFileAtomic(FORMS_FILE, arr);
+  return arr[idx];
+}
+async function deleteFormInStore(id) {
+  if (db) {
+    const res = await db.collection('forms').deleteOne({ id });
+    return { ok: true, deleted: res.deletedCount || 0 };
+  }
+  const arr = readJsonFile(FORMS_FILE, []);
+  const newArr = arr.filter(f => f.id !== id);
+  if (newArr.length === arr.length) return { ok: false, deleted: 0 };
+  writeJsonFileAtomic(FORMS_FILE, newArr);
+  return { ok: true, deleted: arr.length - newArr.length };
+}
+
+/* -------------------------
+   OAuth routes, user endpoints remain unchanged (using legacy data.json)
+   ------------------------- */
+
+// OAuth routes
 app.get('/auth/google', (req, res, next) => {
   if (!passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
   passport.authenticate('google', { scope: ['profile', 'email'] })(req, res, next);
@@ -249,172 +419,36 @@ app.get('/api/me', authMiddleware, (req, res) => {
 
 /* -----------------------------
    Openings endpoints (protected)
-   read/write from OPENINGS_FILE
+   use DB if available, else file fallback
    ----------------------------- */
 
 // GET all openings (protected)
-app.get('/api/openings', authMiddleware, (req, res) => {
-  const openings = readJsonFile(OPENINGS_FILE, []);
-  return res.json(openings || []);
-});
-
-// GET single opening (protected)
-app.get('/api/openings/:id', authMiddleware, (req, res) => {
-  const openings = readJsonFile(OPENINGS_FILE, []);
-  const item = openings.find(o => o.id === req.params.id);
-  if (!item) return res.status(404).json({ error: 'opening_not_found' });
-  return res.json(item);
-});
-
-// CREATE opening (protected)
-app.post('/api/openings', authMiddleware, (req, res) => {
-  const payload = req.body || {};
-  const openings = readJsonFile(OPENINGS_FILE, []);
-  const op = {
-    id: `op_${Date.now()}`,
-    title: payload.title || 'Untitled',
-    location: payload.location || 'Remote',
-    department: payload.department || '',
-    preferredSources: Array.isArray(payload.preferredSources) ? payload.preferredSources : (payload.preferredSources ? payload.preferredSources.split(',') : []),
-    durationMins: payload.durationMins || 30,
-    schema: payload.schema || null,
-    createdAt: new Date().toISOString()
-  };
-  openings.unshift(op);
-  writeJsonFileAtomic(OPENINGS_FILE, openings);
-  console.log('[api POST /api/openings] created', op.id);
-  return res.json(op);
-});
-
-// UPDATE opening (protected)
-app.put('/api/openings/:id', authMiddleware, (req, res) => {
-  const id = req.params.id;
-  const openings = readJsonFile(OPENINGS_FILE, []);
-  const idx = openings.findIndex(o => o.id === id);
-  if (idx === -1) return res.status(404).json({ error: 'opening_not_found' });
-  const cur = openings[idx];
-  const fields = ['title','location','department','preferredSources','durationMins','schema'];
-  fields.forEach(f => { if (req.body[f] !== undefined) cur[f] = req.body[f]; });
-  openings[idx] = cur;
-  writeJsonFileAtomic(OPENINGS_FILE, openings);
-  return res.json(cur);
-});
-
-// DELETE opening (protected) — cascade delete forms
-app.delete('/api/openings/:id', authMiddleware, (req, res) => {
-  const id = req.params.id;
-  // openings
-  const openings = readJsonFile(OPENINGS_FILE, []);
-  const filtered = openings.filter(o => o.id !== id);
-  if (filtered.length === openings.length) return res.status(404).json({ error: 'opening_not_found' });
-  writeJsonFileAtomic(OPENINGS_FILE, filtered);
-
-  // forms cascade
-  const forms = readJsonFile(FORMS_FILE, []);
-  const newForms = forms.filter(f => f.openingId !== id);
-  const deletedFormsCount = forms.length - newForms.length;
-  writeJsonFileAtomic(FORMS_FILE, newForms);
-
-  // legacy responses (still in data.json) — preserve existing behavior
-  const data = readData();
-  data.responses = (data.responses || []).filter(r => r.openingId !== id);
-  writeData(data);
-
-  console.log(`[api DELETE /api/openings/${id}] deleted opening and ${deletedFormsCount} forms`);
-  return res.json({ ok: true, deletedFormsCount });
-});
-
-/* -----------------------------
-   Forms endpoints (protected)
-   ----------------------------- */
-
-// GET all forms (optionally filter by openingId)
-app.get('/api/forms', authMiddleware, (req, res) => {
-  const forms = readJsonFile(FORMS_FILE, []);
-  const { openingId } = req.query;
-  if (openingId) return res.json(forms.filter(f => f.openingId === openingId));
-  return res.json(forms);
-});
-
-// GET single form
-app.get('/api/forms/:id', authMiddleware, (req, res) => {
-  const forms = readJsonFile(FORMS_FILE, []);
-  const f = forms.find(x => x.id === req.params.id);
-  if (!f) return res.status(404).json({ error: 'form_not_found' });
-  return res.json(f);
-});
-
-// CREATE form
-app.post('/api/forms', authMiddleware, (req, res) => {
-  const { openingId, data } = req.body || {};
-  if (!openingId) return res.status(400).json({ error: 'openingId_required' });
-  const openings = readJsonFile(OPENINGS_FILE, []);
-  if (!openings.find(o => o.id === openingId)) return res.status(400).json({ error: 'invalid_openingId' });
-  const forms = readJsonFile(FORMS_FILE, []);
-  const id = `form_${Date.now()}`;
-  const now = new Date().toISOString();
-  const newForm = { id, openingId, data: data || {}, created_at: now, updated_at: now };
-  forms.push(newForm);
-  writeJsonFileAtomic(FORMS_FILE, forms);
-  console.log('[api POST /api/forms] created', id);
-  return res.status(201).json(newForm);
-});
-
-// UPDATE form
-app.put('/api/forms/:id', authMiddleware, (req, res) => {
-  const id = req.params.id;
-  const forms = readJsonFile(FORMS_FILE, []);
-  const idx = forms.findIndex(f => f.id === id);
-  if (idx === -1) return res.status(404).json({ error: 'form_not_found' });
-  const cur = forms[idx];
-  cur.data = req.body.data !== undefined ? req.body.data : cur.data;
-  cur.updated_at = new Date().toISOString();
-  forms[idx] = cur;
-  writeJsonFileAtomic(FORMS_FILE, forms);
-  console.log('[api PUT /api/forms/:id] updated', id);
-  return res.json(cur);
-});
-
-// DELETE form
-app.delete('/api/forms/:id', authMiddleware, (req, res) => {
-  const id = req.params.id;
-  const forms = readJsonFile(FORMS_FILE, []);
-  const newForms = forms.filter(f => f.id !== id);
-  if (newForms.length === forms.length) return res.status(404).json({ error: 'form_not_found' });
-  writeJsonFileAtomic(FORMS_FILE, newForms);
-  console.log('[api DELETE /api/forms/:id] deleted', id);
-  return res.json({ ok: true, deletedFormId: id });
-});
-
-/* -------------------------
-   Responses (protected) - unchanged
-   ------------------------- */
-app.get('/api/responses', authMiddleware, (req, res) => {
-  const data = readData();
-  return res.json(data.responses || []);
-});
-
-/* -------------------------
-   Public endpoints for openings & schema (no auth)
-   Now operate on openings.json
-   ------------------------- */
-
-// List public openings
-app.get('/public/openings', (req, res) => {
+app.get('/api/openings', authMiddleware, async (req, res) => {
   try {
-    const openings = readJsonFile(OPENINGS_FILE, []);
+    const openings = await listOpeningsFromStore();
     return res.json(openings || []);
   } catch (err) {
-    console.error('GET /public/openings error', err);
+    console.error('GET /api/openings error', err && err.message);
     return res.status(500).json({ error: 'server_error' });
   }
 });
 
-// Create opening publicly (no auth)
-app.post('/public/openings', (req, res) => {
+// GET single opening (protected)
+app.get('/api/openings/:id', authMiddleware, async (req, res) => {
+  try {
+    const item = await getOpeningFromStore(req.params.id);
+    if (!item) return res.status(404).json({ error: 'opening_not_found' });
+    return res.json(item);
+  } catch (err) {
+    console.error('GET /api/openings/:id error', err && err.message);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// CREATE opening (protected)
+app.post('/api/openings', authMiddleware, async (req, res) => {
   try {
     const payload = req.body || {};
-    const openings = readJsonFile(OPENINGS_FILE, []);
     const op = {
       id: `op_${Date.now()}`,
       title: payload.title || 'Untitled',
@@ -425,81 +459,222 @@ app.post('/public/openings', (req, res) => {
       schema: payload.schema || null,
       createdAt: new Date().toISOString()
     };
-    openings.unshift(op);
-    writeJsonFileAtomic(OPENINGS_FILE, openings);
-    console.log('[public POST /public/openings] created', op.id);
+    await createOpeningInStore(op);
+    console.log('[api POST /api/openings] created', op.id);
     return res.json(op);
   } catch (err) {
-    console.error('POST /public/openings error', err);
+    console.error('POST /api/openings error', err && err.message);
     return res.status(500).json({ error: 'server_error' });
   }
 });
 
-// Get opening schema (public)
-app.get('/public/openings/:id/schema', (req, res) => {
+// UPDATE opening (protected)
+app.put('/api/openings/:id', authMiddleware, async (req, res) => {
   try {
     const id = req.params.id;
-    const openings = readJsonFile(OPENINGS_FILE, []);
-    const op = openings.find(o => o.id === id);
-    if (!op) return res.status(404).json({ error: 'opening_not_found' });
-    return res.json({ schema: op.schema || null });
+    const fields = {};
+    ['title','location','department','preferredSources','durationMins','schema'].forEach(f => { if (req.body[f] !== undefined) fields[f] = req.body[f]; });
+    const updated = await updateOpeningInStore(id, fields);
+    if (!updated) return res.status(404).json({ error: 'opening_not_found' });
+    return res.json(updated);
   } catch (err) {
-    console.error('GET /public/openings/:id/schema error', err);
+    console.error('PUT /api/openings/:id error', err && err.message);
     return res.status(500).json({ error: 'server_error' });
   }
 });
 
-// Save opening schema (public)
-app.post('/public/openings/:id/schema', (req, res) => {
+// DELETE opening (protected) — cascade delete forms
+app.delete('/api/openings/:id', authMiddleware, async (req, res) => {
   try {
     const id = req.params.id;
-    const schema = req.body.schema;
-    if (!schema || !Array.isArray(schema)) return res.status(400).json({ error: 'missing_or_invalid_schema' });
-    const openings = readJsonFile(OPENINGS_FILE, []);
-    const idx = openings.findIndex(o => o.id === id);
-    if (idx === -1) return res.status(404).json({ error: 'opening_not_found' });
-    openings[idx].schema = schema;
-    writeJsonFileAtomic(OPENINGS_FILE, openings);
-    console.log('[public POST /public/openings/:id/schema] saved schema for', id);
-    return res.json({ ok: true, schema });
+    const result = await deleteOpeningInStore(id);
+    return res.json(result);
   } catch (err) {
-    console.error('POST /public/openings/:id/schema error', err);
+    console.error('DELETE /api/openings/:id error', err && err.message);
     return res.status(500).json({ error: 'server_error' });
   }
 });
 
-// Delete opening publicly (no auth) — cascade delete forms (careful!)
-app.delete('/public/openings/:id', (req, res) => {
+/* -----------------------------
+   Forms endpoints (protected)
+   ----------------------------- */
+
+// GET all forms (optionally filter by openingId)
+app.get('/api/forms', authMiddleware, async (req, res) => {
+  try {
+    const { openingId } = req.query;
+    const forms = await listFormsFromStore(openingId);
+    return res.json(forms || []);
+  } catch (err) {
+    console.error('GET /api/forms error', err && err.message);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// GET single form
+app.get('/api/forms/:id', authMiddleware, async (req, res) => {
+  try {
+    const f = await getFormFromStore(req.params.id);
+    if (!f) return res.status(404).json({ error: 'form_not_found' });
+    return res.json(f);
+  } catch (err) {
+    console.error('GET /api/forms/:id error', err && err.message);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// CREATE form
+app.post('/api/forms', authMiddleware, async (req, res) => {
+  try {
+    const { openingId, data } = req.body || {};
+    if (!openingId) return res.status(400).json({ error: 'openingId_required' });
+    const opening = await getOpeningFromStore(openingId);
+    if (!opening) return res.status(400).json({ error: 'invalid_openingId' });
+    const id = `form_${Date.now()}`;
+    const now = new Date().toISOString();
+    const newForm = { id, openingId, data: data || {}, created_at: now, updated_at: now };
+    await createFormInStore(newForm);
+    console.log('[api POST /api/forms] created', id);
+    return res.status(201).json(newForm);
+  } catch (err) {
+    console.error('POST /api/forms error', err && err.message);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// UPDATE form
+app.put('/api/forms/:id', authMiddleware, async (req, res) => {
   try {
     const id = req.params.id;
-    const openings = readJsonFile(OPENINGS_FILE, []);
-    const before = openings.length;
-    const newOpenings = openings.filter(o => o.id !== id);
-    const removed = before - newOpenings.length;
-    if (removed === 0) return res.status(404).json({ error: 'opening_not_found' });
-    writeJsonFileAtomic(OPENINGS_FILE, newOpenings);
-
-    // cascade forms
-    const forms = readJsonFile(FORMS_FILE, []);
-    const newForms = forms.filter(f => f.openingId !== id);
-    const deletedFormsCount = forms.length - newForms.length;
-    writeJsonFileAtomic(FORMS_FILE, newForms);
-
-    // legacy responses cleanup (still preserved behavior)
-    const data = readData();
-    data.responses = (data.responses || []).filter(r => r.openingId !== id);
-    writeData(data);
-
-    console.log(`[public DELETE /public/openings/${id}] removed opening and ${deletedFormsCount} forms`);
-    return res.json({ ok: true, deletedFormsCount });
+    const patch = {};
+    if (req.body.data !== undefined) patch.data = req.body.data;
+    patch.updated_at = new Date().toISOString();
+    const updated = await updateFormInStore(id, patch);
+    if (!updated) return res.status(404).json({ error: 'form_not_found' });
+    console.log('[api PUT /api/forms/:id] updated', id);
+    return res.json(updated);
   } catch (err) {
-    console.error('DELETE /public/openings/:id error', err);
+    console.error('PUT /api/forms/:id error', err && err.message);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// DELETE form
+app.delete('/api/forms/:id', authMiddleware, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const result = await deleteFormInStore(id);
+    if (!result.ok) return res.status(404).json({ error: 'form_not_found' });
+    console.log('[api DELETE /api/forms/:id] deleted', id);
+    return res.json(result);
+  } catch (err) {
+    console.error('DELETE /api/forms/:id error', err && err.message);
     return res.status(500).json({ error: 'server_error' });
   }
 });
 
 /* -------------------------
-   Public apply endpoint -> upload resume to Drive, append to Sheet, persist locally (unchanged)
+   Responses (protected) - unchanged (legacy stored in data.json and optionally in DB)
+   ------------------------- */
+app.get('/api/responses', authMiddleware, async (req, res) => {
+  try {
+    // if DB has responses, prefer returning them; otherwise fallback to data.json
+    if (db) {
+      const rows = await db.collection('responses').find({}).sort({ createdAt: -1 }).toArray();
+      return res.json(rows.map(normalizeDoc));
+    }
+    const data = readData();
+    return res.json(data.responses || []);
+  } catch (err) {
+    console.error('GET /api/responses error', err && err.message);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+/* -------------------------
+   Public endpoints for openings & schema (no auth)
+   ------------------------- */
+
+// List public openings
+app.get('/public/openings', async (req, res) => {
+  try {
+    const openings = await listOpeningsFromStore();
+    return res.json(openings || []);
+  } catch (err) {
+    console.error('GET /public/openings error', err);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// Create opening publicly (no auth)
+app.post('/public/openings', async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const op = {
+      id: `op_${Date.now()}`,
+      title: payload.title || 'Untitled',
+      location: payload.location || 'Remote',
+      department: payload.department || '',
+      preferredSources: Array.isArray(payload.preferredSources) ? payload.preferredSources : (payload.preferredSources ? payload.preferredSources.split(',') : []),
+      durationMins: payload.durationMins || 30,
+      schema: payload.schema || null,
+      createdAt: new Date().toISOString()
+    };
+    await createOpeningInStore(op);
+    console.log('[public POST /public/openings] created', op.id);
+    return res.json(op);
+  } catch (err) {
+    console.error('POST /public/openings error', err && err.message);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// Get opening schema (public)
+app.get('/public/openings/:id/schema', async (req, res) => {
+  try {
+    const op = await getOpeningFromStore(req.params.id);
+    if (!op) return res.status(404).json({ error: 'opening_not_found' });
+    return res.json({ schema: op.schema || null });
+  } catch (err) {
+    console.error('GET /public/openings/:id/schema error', err && err.message);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// Save opening schema (public)
+app.post('/public/openings/:id/schema', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const schema = req.body.schema;
+    if (!schema || !Array.isArray(schema)) return res.status(400).json({ error: 'missing_or_invalid_schema' });
+    const op = await getOpeningFromStore(id);
+    if (!op) return res.status(404).json({ error: 'opening_not_found' });
+    op.schema = schema;
+    op.updatedAt = new Date().toISOString();
+    await updateOpeningInStore(id, { schema: op.schema, updatedAt: op.updatedAt });
+    console.log('[public POST /public/openings/:id/schema] saved schema for', id);
+    return res.json({ ok: true, schema: op.schema });
+  } catch (err) {
+    console.error('POST /public/openings/:id/schema error', err && err.message);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// Delete opening publicly (no auth) — cascade delete forms (careful!)
+app.delete('/public/openings/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const result = await deleteOpeningInStore(id);
+    console.log(`[public DELETE /public/openings/${id}] removed opening`);
+    return res.json(result);
+  } catch (err) {
+    console.error('DELETE /public/openings/:id error', err && err.message);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+/* -------------------------
+   Public apply endpoint -> upload resume to Drive, append to Sheet, persist locally (unchanged behavior)
    ------------------------- */
 app.post('/api/apply', upload.single('resume'), async (req, res) => {
   try {
@@ -507,8 +682,8 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     const src = req.query.src || req.body.src || 'unknown';
     if (!openingId) return res.status(400).json({ error: 'missing opening id' });
 
-    const data = readData();
-    const opening = (readJsonFile(OPENINGS_FILE, []) || []).find(o => o.id === openingId) || data.openings.find(o => o.id === openingId);
+    // find opening from DB or files/legacy
+    const opening = await getOpeningFromStore(openingId) || readData().openings.find(o => o.id === openingId);
     const openingTitle = opening ? opening.title : null;
 
     // Resume upload to Drive (or fallback to local)
@@ -547,6 +722,17 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
       answers,
       createdAt: new Date().toISOString()
     };
+
+    // persist responses: both DB (if available) and legacy data.json
+    if (db) {
+      try {
+        await db.collection('responses').insertOne(resp);
+      } catch (err) {
+        console.warn('Failed to write response to DB, will fallback to file. err=', err && err.message);
+      }
+    }
+
+    const data = readData();
     data.responses.unshift(resp);
     writeData(data);
 
@@ -573,6 +759,17 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
 // Health
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-app.listen(PORT, () => {
-  console.log(`Backend listening on ${PORT}`);
-});
+// Start server after attempting Mongo connection (but fallback to file store)
+connectMongo()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Backend listening on ${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error('Mongo connection failed. Starting server with file-based fallback.', err && err.message);
+    app.listen(PORT, () => {
+      console.log(`Backend listening on ${PORT} (without Mongo)`);
+    });
+  });
+
