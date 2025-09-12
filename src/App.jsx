@@ -14,6 +14,9 @@ const Icon = ({ name, className = "w-5 h-5 inline-block" }) => {
   return icons[name] || null;
 };
 
+/* -------------------------
+   Template data (unchanged)
+   ------------------------- */
 const templateQuestions = [
   { id: uuidv4(), type: "short_text", label: "Full name", required: true },
   { id: uuidv4(), type: "email", label: "Email address", required: true },
@@ -38,10 +41,41 @@ const QUESTION_TYPES = [
   { value: "date", label: "Date" },
 ];
 
+/* -------------------------
+   Simple Login Page Component
+   ------------------------- */
+function LoginPage({ backendUrl }) {
+  const handleLogin = () => {
+    // Redirect user to backend OAuth entrypoint
+    window.location.href = `${backendUrl}/auth/google`;
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-100 p-6">
+      <div className="max-w-md w-full bg-white p-8 rounded-lg shadow">
+        <h1 className="text-2xl font-semibold mb-4">Sign in</h1>
+        <p className="text-sm text-gray-600 mb-6">
+          Sign in with Google to manage openings and view responses.
+        </p>
+        <button onClick={handleLogin} className="w-full inline-flex items-center justify-center gap-3 px-4 py-3 bg-blue-600 text-white rounded">
+          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none"><path d="M21 12.3c0-.8-.1-1.5-.3-2.2H12v4.2h5.5c-.2 1.2-.9 2.3-1.9 3.1v2.6h3.1C20.1 18.3 21 15.5 21 12.3z" fill="#4285F4"/><path d="M12 22c2.7 0 4.9-.9 6.6-2.4l-3.1-2.6c-.9.6-2.1 1-3.5 1-2.7 0-4.9-1.8-5.7-4.3H3.9v2.7C5.7 19.9 8.6 22 12 22z" fill="#34A853"/><path d="M6.3 13.7A6.7 6.7 0 016 12c0-.6.1-1.1.3-1.7V7.6H3.9A10 10 0 002 12c0 1.6.4 3 1.1 4.4l2.2-2.7z" fill="#FBBC05"/><path d="M12 6.5c1.5 0 2.8.5 3.8 1.5l2.9-2.9C16.9 3.2 14.7 2 12 2 8.6 2 5.7 4.1 3.9 7.6l2.4 2.7C7 8.3 9.3 6.5 12 6.5z" fill="#EA4335"/></svg>
+          Sign in with Google
+        </button>
+        <div className="mt-4 text-xs text-gray-500">If your email is not allowed in the backend user list, sign-in will be denied by the server.</div>
+      </div>
+    </div>
+  );
+}
+
+/* -------------------------
+   Main App
+   ------------------------- */
 export default function App() {
-// TEMP: force backend URL for debugging — remove later and use REACT_APP_API_URL env var
-const API = process.env.REACT_APP_API_URL || 'https://hr-tools-backend.onrender.com';
-console.log('Using API endpoint:', API);
+  // Backend API root — keep debug override if you need it, otherwise use env.
+  const API = process.env.REACT_APP_API_URL || 'https://hr-tools-backend.onrender.com';
+  const BACKEND = API; // used for OAuth redirect
+
+  console.log('Using API endpoint:', API);
 
   const [openings, setOpenings] = useState([]);
   const [activeTab, setActiveTab] = useState("overview");
@@ -53,6 +87,7 @@ console.log('Using API endpoint:', API);
 
   // auth / user
   const [user, setUser] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false); // whether we've confirmed auth status
 
   // custom question modal
   const [showCustomModal, setShowCustomModal] = useState(false);
@@ -66,51 +101,83 @@ console.log('Using API endpoint:', API);
   // public form modal
   const [publicView, setPublicView] = useState(null); // { openingId, source, submitted, resumeLink }
 
+  /* -------------------------
+     AUTH: check token & fetch profile
+     ------------------------- */
   useEffect(() => {
-    // Check if OAuth redirected back with token
+    // On mount, look for token in URL (from OAuth callback) or in localStorage
     const params = new URLSearchParams(window.location.search);
-    const token = params.get('token');
-    if (token) {
-      localStorage.setItem('token', token);
+    const tokenFromUrl = params.get('token');
+    if (tokenFromUrl) {
+      // store and clean up URL
+      localStorage.setItem('token', tokenFromUrl);
       params.delete('token');
       const newUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
       window.history.replaceState({}, '', newUrl);
+      fetchProfile(tokenFromUrl);
+      return;
+    }
+
+    const token = localStorage.getItem('token');
+    if (token) {
       fetchProfile(token);
     } else {
-      const existing = localStorage.getItem('token');
-      if (existing) fetchProfile(existing);
+      setAuthChecked(true); // no token; show login page
     }
-    // If not signed in, keep local openings (pre-existing)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // fetch logged-in user
+  // fetch logged-in user (call with token or read from localStorage)
   async function fetchProfile(token) {
     try {
       const t = token || localStorage.getItem('token');
-      if (!t) return setUser(null);
+      if (!t) {
+        setUser(null);
+        setAuthChecked(true);
+        return;
+      }
       const res = await fetch(`${API}/api/me`, { headers: { Authorization: `Bearer ${t}` }});
-      if (!res.ok) { localStorage.removeItem('token'); setUser(null); return; }
+      if (!res.ok) {
+        // invalid/expired token — remove and force sign-in
+        localStorage.removeItem('token');
+        setUser(null);
+        setAuthChecked(true);
+        return;
+      }
       const u = await res.json();
       setUser(u);
-      // load server-side openings & responses
+      setAuthChecked(true);
+      // load server-side openings & responses for authenticated user
       loadOpenings();
       loadResponses();
     } catch (err) {
       console.error('fetchProfile', err);
+      localStorage.removeItem('token');
       setUser(null);
+      setAuthChecked(true);
     }
   }
 
+  // wrapper for API calls that handles 401 by cleaning token
   async function apiFetch(path, opts = {}) {
     const token = localStorage.getItem('token');
-    const headers = opts.headers || {};
+    const headers = { ...(opts.headers || {}) };
     if (token) headers.Authorization = `Bearer ${token}`;
     const res = await fetch(`${API}${path}`, { ...opts, headers });
-    const json = await res.json().catch(()=>null);
+    if (res.status === 401) {
+      // unauthorized -> clear token and state
+      localStorage.removeItem('token');
+      setUser(null);
+      throw { status: 401, body: { error: 'unauthorized' } };
+    }
+    const json = await res.json().catch(() => null);
     if (!res.ok) throw { status: res.status, body: json };
     return json;
   }
 
+  /* -------------------------
+     Loaders for openings / responses
+     ------------------------- */
   async function loadOpenings() {
     try {
       if (!localStorage.getItem('token')) return;
@@ -130,6 +197,12 @@ console.log('Using API endpoint:', API);
       console.error('loadResponses', err);
     }
   }
+
+  /* -------------------------
+     All the rest of your UI functions (unchanged behavior)
+     - create opening, edit, delete, addQuestion, publish, etc.
+     - I mostly reused your original code, only calling apiFetch when authorized.
+     ------------------------- */
 
   function openCreate() {
     setNewOpening({ title: "", location: "Delhi", department: "", preferredSources: [], durationMins: 30 });
@@ -245,58 +318,57 @@ console.log('Using API endpoint:', API);
   }
 
   // NEW: submit to backend (multipart/form-data)
-async function handlePublicSubmit(e) {
-  e.preventDefault();
-  const formEl = e.target;
-  const openingId = publicView.openingId;
-  const source = publicView.source || 'unknown';
-  const fd = new FormData();
+  async function handlePublicSubmit(e) {
+    e.preventDefault();
+    const formEl = e.target;
+    const openingId = publicView.openingId;
+    const source = publicView.source || 'unknown';
+    const fd = new FormData();
 
-  for (let i = 0; i < formEl.elements.length; i++) {
-    const el = formEl.elements[i];
-    if (!el.name) continue;
-    if (el.type === 'file') {
-      if (el.files && el.files[0]) fd.append('resume', el.files[0], el.files[0].name);
-    } else if (el.type === 'checkbox') {
-      if (el.checked) fd.append(el.name, el.value);
-    } else {
-      fd.append(el.name, el.value);
-    }
-  }
-
-  try {
-    const resp = await fetch(`${API}/api/apply?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(source)}`, {
-      method: 'POST',
-      body: fd
-    });
-
-    // read raw text first (prevent json() from throwing on empty body)
-    const text = await resp.text().catch(() => null);
-    let data = null;
-    if (text) {
-      try {
-        data = JSON.parse(text);
-      } catch (err) {
-        // the server returned something but it's not valid JSON
-        console.warn('Non-JSON response from server:', text);
+    for (let i = 0; i < formEl.elements.length; i++) {
+      const el = formEl.elements[i];
+      if (!el.name) continue;
+      if (el.type === 'file') {
+        if (el.files && el.files[0]) fd.append('resume', el.files[0], el.files[0].name);
+      } else if (el.type === 'checkbox') {
+        if (el.checked) fd.append(el.name, el.value);
+      } else {
+        fd.append(el.name, el.value);
       }
     }
 
-    if (!resp.ok) {
-      const message = data?.error || data?.message || `Server returned ${resp.status}`;
-      throw new Error(message);
+    try {
+      const resp = await fetch(`${API}/api/apply?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(source)}`, {
+        method: 'POST',
+        body: fd
+      });
+
+      // read raw text first (prevent json() from throwing on empty body)
+      const text = await resp.text().catch(() => null);
+      let data = null;
+      if (text) {
+        try {
+          data = JSON.parse(text);
+        } catch (err) {
+          // the server returned something but it's not valid JSON
+          console.warn('Non-JSON response from server:', text);
+        }
+      }
+
+      if (!resp.ok) {
+        const message = data?.error || data?.message || `Server returned ${resp.status}`;
+        throw new Error(message);
+      }
+
+      // success: prefer resumeLink if provided, otherwise show raw body
+      const resumeLink = data?.resumeLink || data?.link || null;
+      setPublicView(prev => ({ ...prev, submitted: true, resumeLink }));
+      alert('Application submitted successfully!' + (resumeLink ? ` Resume: ${resumeLink}` : ''));
+    } catch (err) {
+      console.error('Submit error', err);
+      alert('Submission failed: ' + (err.message || 'unknown error'));
     }
-
-    // success: prefer resumeLink if provided, otherwise show raw body
-    const resumeLink = data?.resumeLink || data?.link || null;
-    setPublicView(prev => ({ ...prev, submitted: true, resumeLink }));
-    alert('Application submitted successfully!' + (resumeLink ? ` Resume: ${resumeLink}` : ''));
-  } catch (err) {
-    console.error('Submit error', err);
-    alert('Submission failed: ' + (err.message || 'unknown error'));
   }
-}
-
 
   // helper for public form layout mapping by keywords
   const currentSchema = publicView ? (forms[publicView.openingId]?.questions || []) : [];
@@ -304,6 +376,28 @@ async function handlePublicSubmit(e) {
     const k = (keyword || "").toLowerCase();
     return currentSchema.find(q => q.label && q.label.toLowerCase().includes(k));
   };
+
+  /* -------------------------
+     If auth not checked yet, show blank spinner
+     If auth checked & no user, show LoginPage
+     Otherwise show the full app UI
+     ------------------------- */
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-gray-600">Checking authentication…</div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    // Not authenticated — show a clean login page (UI won't be accessible until login)
+    return <LoginPage backendUrl={BACKEND} />;
+  }
+
+  /* -------------------------
+     Authenticated UI (your original UI follows)
+     ------------------------- */
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800 flex">
@@ -324,7 +418,7 @@ async function handlePublicSubmit(e) {
                 </>
               ) : (
                 <div className="text-xs opacity-80">
-                  <a href={`${API}/auth/google`} className="text-sm text-blue-300">Sign in with Google</a>
+                  <a href={`${BACKEND}/auth/google`} className="text-sm text-blue-300">Sign in with Google</a>
                 </div>
               )}
             </div>
@@ -338,12 +432,12 @@ async function handlePublicSubmit(e) {
         </div>
       </aside>
 
-      {/* Main content (unchanged visual layout) */}
+      {/* Main content (rest of your UI unchanged) */}
       <main className="flex-1 p-8 overflow-auto">
         {activeTab === "overview" && (
           <>
             <h1 className="text-2xl font-semibold mb-4">Overview</h1>
-            {/* ... same overview UI as before ... */}
+            {/* ... rest of your existing overview UI ... */}
             <div className="grid grid-cols-3 gap-6 mb-6">
               <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
                 <div className="flex justify-between items-center mb-4">
