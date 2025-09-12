@@ -12,6 +12,8 @@ const { google } = require('googleapis');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const stream = require('stream');
+const passport = require('passport');
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
 
 const app = express();
 app.use(cors());
@@ -113,13 +115,19 @@ function sanitizeSheetTitle(title) {
   return String(title).replace(/[\\\/\?\*\[\]\:]/g, '_').slice(0, 90);
 }
 
-// Ensure sheet tab exists, and set header row (metadata + question columns)
+/**
+ * ensureSheetTabWithHeaders:
+ * - ensures a sheet/tab with `sheetTitle` exists
+ * - reads existing header row; if empty or missing, writes the header row:
+ *     [Timestamp, OpeningId, OpeningTitle, Source, ResumeLink, ...question labels]
+ * - returns the headers array used
+ */
 async function ensureSheetTabWithHeaders(spreadsheetId, sheetTitle, questionSchema = []) {
   if (!spreadsheetId) throw new Error('spreadsheetId required');
   const sheets = await getSheetsService();
   const cleanTitle = sanitizeSheetTitle(sheetTitle);
 
-  // get spreadsheet metadata
+  // get spreadsheet metadata & sheetId list
   const meta = await sheets.spreadsheets.get({ spreadsheetId, includeGridData: false });
   const existingSheets = (meta.data.sheets || []).map(s => s.properties?.title);
 
@@ -139,22 +147,45 @@ async function ensureSheetTabWithHeaders(spreadsheetId, sheetTitle, questionSche
   const questionHeaders = (Array.isArray(questionSchema) ? questionSchema.map(q => q.label || q.id) : []);
   const headers = [...metaHeaders, ...questionHeaders];
 
-  // write header row (A1)
-  await sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range: `${cleanTitle}!A1`,
-    valueInputOption: 'RAW',
-    requestBody: { values: [headers] }
-  });
+  // check if header already exists (read A1:Z1)
+  try {
+    const existing = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${cleanTitle}!A1:Z1`
+    });
+    const vals = existing.data.values && existing.data.values[0];
+    const hasHeader = Array.isArray(vals) && vals.some(cell => cell && String(cell).trim() !== '');
+    if (!hasHeader) {
+      // write header row (A1)
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${cleanTitle}!A1`,
+        valueInputOption: 'RAW',
+        requestBody: { values: [headers] }
+      });
+      console.log('Wrote header row for sheet', cleanTitle);
+    } else {
+      console.log('Sheet', cleanTitle, 'already has header; skipping write.');
+    }
+  } catch (err) {
+    // If read fails for some reason, attempt to write header anyway
+    console.warn('Could not read header row; attempting to write header:', err && err.message);
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${cleanTitle}!A1`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [headers] }
+    });
+  }
 
   return headers;
 }
 
-// Append a row to a specific sheet tab (A:Z)
+// Append a row to a specific sheet tab, starting at A (use A1 to anchor to col A)
 async function appendRowToSheetTab(spreadsheetId, sheetTitle, valuesArray) {
   if (!spreadsheetId) throw new Error('spreadsheetId required');
   const sheets = await getSheetsService();
-  const range = `${sanitizeSheetTitle(sheetTitle)}!A:Z`;
+  const range = `${sanitizeSheetTitle(sheetTitle)}!A1`;
   const res = await sheets.spreadsheets.values.append({
     spreadsheetId,
     range,
@@ -165,13 +196,13 @@ async function appendRowToSheetTab(spreadsheetId, sheetTitle, valuesArray) {
   return res.status === 200 || res.status === 201;
 }
 
-// Generic fallback append to Sheet1 (keeps previous behavior)
+// Generic fallback append to Sheet1 (force A1 anchor)
 async function appendToSheet(spreadsheetId, valuesArray) {
   if (!spreadsheetId) throw new Error('spreadsheetId required');
   const sheets = await getSheetsService();
   const res = await sheets.spreadsheets.values.append({
     spreadsheetId,
-    range: 'Sheet1!A:Z',
+    range: 'Sheet1!A1',
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [valuesArray] }
@@ -179,7 +210,7 @@ async function appendToSheet(spreadsheetId, valuesArray) {
   return res.status === 200 || res.status === 201;
 }
 
-// Drive upload helper
+// Drive upload helper (buffer -> stream), sets public permission where possible
 async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet-stream') {
   if (!DRIVE_FOLDER_ID) throw new Error('DRIVE_FOLDER_ID not set in env');
   const drive = await getDriveService();
@@ -232,7 +263,7 @@ async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet
 // Multer
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
-// JWT helpers (unchanged)
+// JWT helpers
 function signUserToken(user) {
   const payload = { id: user.id, email: user.email, role: user.role || 'recruiter' };
   return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
@@ -252,8 +283,56 @@ function authMiddleware(req, res, next) {
   }
 }
 
-// Passport OAuth sections omitted here for brevity if unchanged: keep your existing passport config if you have it.
-// (You can paste your passport code here; nothing needs to change for the sheet behavior.)
+// Passport Google OAuth: register users on callback and issue JWT
+if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET) {
+  passport.use(new GoogleStrategy({
+    clientID: process.env.GOOGLE_OAUTH_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+    callbackURL: process.env.GOOGLE_OAUTH_CALLBACK || `${FRONTEND_URL}/auth/google/callback`
+  }, async (accessToken, refreshToken, profile, done) => {
+    try {
+      const data = readData();
+      const email = profile.emails && profile.emails[0] && profile.emails[0].value;
+      let user = data.users.find(u => u.email === email);
+      if (!user) {
+        user = {
+          id: `u_${Date.now()}`,
+          email,
+          name: profile.displayName || '',
+          role: 'recruiter',
+          createdAt: new Date().toISOString()
+        };
+        data.users.push(user);
+        writeData(data);
+      }
+      return done(null, user);
+    } catch (err) {
+      return done(err);
+    }
+  }));
+  app.use(passport.initialize());
+} else {
+  console.warn('Google OAuth not configured: GOOGLE_OAUTH_CLIENT_ID/SECRET missing');
+}
+
+// OAuth routes
+app.get('/auth/google', (req, res, next) => {
+  if (!passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
+  passport.authenticate('google', { scope: ['profile', 'email'] })(req, res, next);
+});
+
+app.get('/auth/google/callback', (req, res, next) => {
+  if (!passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
+  passport.authenticate('google', { session: false }, (err, user) => {
+    if (err || !user) {
+      console.error('OAuth callback error', err);
+      return res.status(500).json({ error: 'oauth_failed' });
+    }
+    const token = signUserToken(user);
+    const redirectTo = `${FRONTEND_URL}?token=${encodeURIComponent(token)}`;
+    return res.redirect(redirectTo);
+  })(req, res, next);
+});
 
 // --- Openings endpoints
 app.get('/api/openings', authMiddleware, (req, res) => {
@@ -271,7 +350,7 @@ app.post('/api/openings', authMiddleware, (req, res) => {
     department: payload.department || '',
     preferredSources: Array.isArray(payload.preferredSources) ? payload.preferredSources : (payload.preferredSources ? payload.preferredSources.split(',') : []),
     durationMins: payload.durationMins || 30,
-    schema: payload.schema || null, // schema should be array of { id, label, type, options? }
+    schema: payload.schema || null, // schema = [{ id, label, type, options? }]
     createdAt: new Date().toISOString()
   };
   data.openings.unshift(op);
@@ -389,23 +468,29 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     data.responses.unshift(resp);
     writeData(data);
 
-    // If schema present, ensure sheet tab headers and append mapped row with metadata in first columns
+    // If a schema exists for this opening, ensure sheet tab headers and append mapped row
     if (SHEET_ID && activeSchema && Array.isArray(activeSchema) && activeSchema.length) {
       try {
-        // ensure headers: metadata + question labels
-        const headers = await ensureSheetTabWithHeaders(SHEET_ID, sheetTabName, activeSchema);
+        // ensure headers: metadata + question labels (only write header if not present)
+        await ensureSheetTabWithHeaders(SHEET_ID, sheetTabName, activeSchema);
+
         // Build valuesArray that exactly matches headers
         const metaValues = [ new Date().toISOString(), openingId, openingTitle, src, resumeLink || '' ];
+
         // Map question schema order to answers (schema items should have unique id fields)
         const questionValues = activeSchema.map(s => {
-          // prioritize answer by question id (s.id). If not present, also try by matching label key
-          const val = answers[s.id] !== undefined ? answers[s.id] : (answers[s.label] !== undefined ? answers[s.label] : '');
+          // prioritize answer by question id (s.id). If not present, try by label text or fallback empty
+          let val = '';
+          if (s.id && answers[s.id] !== undefined) val = answers[s.id];
+          else if (answers[s.label] !== undefined) val = answers[s.label];
+          else if (answers[s.name] !== undefined) val = answers[s.name];
+          // handle arrays
           if (Array.isArray(val)) return val.join(', ');
           return (val === undefined || val === null) ? '' : String(val);
         });
         const valuesArray = [...metaValues, ...questionValues];
 
-        // append
+        // append anchored to A1 so the row starts at column A
         await appendRowToSheetTab(SHEET_ID, sheetTabName, valuesArray);
         console.log('Appended mapped row to sheet tab', sheetTabName);
       } catch (err) {
@@ -422,7 +507,7 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
         }
       }
     } else {
-      // No schema: fallback generic append
+      // No schema: fallback generic append to Sheet1 (anchored to A1)
       if (SHEET_ID) {
         try {
           const genericRow = [new Date().toISOString(), openingId, openingTitle || '', src, resumeLink || '', JSON.stringify(answers)];
