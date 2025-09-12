@@ -1,4 +1,4 @@
-// server.js (Mongo-enabled with file fallback)
+// server.js
 // Backend: OAuth (Google), file upload -> Drive, append -> Google Sheets,
 // JSON file persistence for openings -> server_data/openings.json
 // and forms -> server_data/forms.json; existing data.json kept for responses/users.
@@ -227,35 +227,50 @@ if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET
 }
 
 // ---------------------------
-// MongoDB connection + helpers
+// Robust MongoDB connection + helpers
 // ---------------------------
 const MONGO_URI = process.env.MONGO_URI || null;
 const MONGO_DB_NAME = process.env.MONGO_DB_NAME || 'hrtool';
-let mongoClient = null;
+
+let mongoClientInstance = null;
 let db = null;
 
 async function connectMongo() {
   if (!MONGO_URI) {
-    console.log('MONGO_URI not set — skipping MongoDB connection');
+    console.log('[mongo] MONGO_URI not set — skipping MongoDB connection (file fallback enabled)');
     return null;
   }
+
   if (db) return db;
+
   try {
-    const client = new MongoClient(MONGO_URI, {
-  serverSelectionTimeoutMS: 15000, // keep this if you want
-});
-    await mongoClient.connect();
-    db = mongoClient.db(MONGO_DB_NAME);
-    console.log('✅ Connected to MongoDB:', db.databaseName);
-    // ensure indexes
-    try { await db.collection('openings').createIndex({ id: 1 }, { unique: true, sparse: true }); } catch (e) {}
-    try { await db.collection('forms').createIndex({ id: 1 }, { unique: true, sparse: true }); } catch (e) {}
-    try { await db.collection('responses').createIndex({ id: 1 }, { unique: true, sparse: true }); } catch (e) {}
+    console.log('[mongo] creating MongoClient...');
+    mongoClientInstance = new MongoClient(MONGO_URI, {
+      // modern driver: omit deprecated options
+      serverSelectionTimeoutMS: 15000,
+      connectTimeoutMS: 15000,
+      tls: true
+    });
+
+    console.log('[mongo] attempting to connect to Atlas...');
+    await mongoClientInstance.connect();
+
+    db = mongoClientInstance.db(MONGO_DB_NAME || undefined);
+    console.log('✅ Connected to MongoDB:', db.databaseName || '(default from URI)');
+
+    // create lightweight indexes non-blocking (best-effort)
+    await Promise.allSettled([
+      db.collection('openings').createIndex({ id: 1 }, { unique: true, sparse: true }),
+      db.collection('forms').createIndex({ id: 1 }, { unique: true, sparse: true }),
+      db.collection('responses').createIndex({ id: 1 }, { unique: true, sparse: true })
+    ]);
+
     return db;
   } catch (err) {
-    console.error('Failed to connect to MongoDB:', err && err.message);
-    // keep db null and allow fallback to file system
+    console.error('[mongo] Failed to connect to MongoDB:', err && (err.stack || err.message));
     db = null;
+    try { if (mongoClientInstance) await mongoClientInstance.close(); } catch (e) { /* ignore */ }
+    mongoClientInstance = null;
     throw err;
   }
 }
@@ -308,14 +323,11 @@ async function updateOpeningInStore(id, fields) {
   return arr[idx];
 }
 async function deleteOpeningInStore(id) {
-  // remove opening + cascade forms + responses (both DB & file)
   let removed = 0;
   if (db) {
     const res = await db.collection('openings').deleteOne({ id });
     removed = res.deletedCount || 0;
-    // delete forms in DB
-    const formRes = await db.collection('forms').deleteMany({ openingId: id });
-    // delete responses in DB if present
+    await db.collection('forms').deleteMany({ openingId: id });
     await db.collection('responses').deleteMany({ openingId: id });
   } else {
     const arr = readJsonFile(OPENINGS_FILE, []);
@@ -324,13 +336,13 @@ async function deleteOpeningInStore(id) {
     writeJsonFileAtomic(OPENINGS_FILE, newArr);
   }
 
-  // cascade forms in file storage too (if any)
+  // Ensure file forms are cleaned too
   const forms = readJsonFile(FORMS_FILE, []);
   const newForms = forms.filter(f => f.openingId !== id);
   const deletedFormsCount = forms.length - newForms.length;
   if (deletedFormsCount > 0) writeJsonFileAtomic(FORMS_FILE, newForms);
 
-  // also delete legacy responses in data.json
+  // legacy responses in data.json
   const data = readData();
   data.responses = (data.responses || []).filter(r => r.openingId !== id);
   writeData(data);
@@ -576,11 +588,10 @@ app.delete('/api/forms/:id', authMiddleware, async (req, res) => {
 });
 
 /* -------------------------
-   Responses (protected) - unchanged (legacy stored in data.json and optionally in DB)
+   Responses (protected) - legacy stored in data.json and optionally in DB
    ------------------------- */
 app.get('/api/responses', authMiddleware, async (req, res) => {
   try {
-    // if DB has responses, prefer returning them; otherwise fallback to data.json
     if (db) {
       const rows = await db.collection('responses').find({}).sort({ createdAt: -1 }).toArray();
       return res.json(rows.map(normalizeDoc));
@@ -764,14 +775,14 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 // Start server after attempting Mongo connection (but fallback to file store)
 connectMongo()
   .then(() => {
+    console.log('[startup] Mongo attempt finished (connected or verified). Starting HTTP server...');
     app.listen(PORT, () => {
       console.log(`Backend listening on ${PORT}`);
     });
   })
   .catch((err) => {
-    console.error('Mongo connection failed. Starting server with file-based fallback.', err && err.message);
+    console.error('[startup] Mongo connection failed. Starting server with file-based fallback.', err && err.message);
     app.listen(PORT, () => {
       console.log(`Backend listening on ${PORT} (without Mongo)`);
     });
   });
-
