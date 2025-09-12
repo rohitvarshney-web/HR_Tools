@@ -1,0 +1,7 @@
+{
+  "openings": [],
+  "responses": [],
+  "users": [
+    { "id": "u_1", "email": "rohit.varshney@stampmyvisa.com", "name": "Rohit Varshney", "role": "admin", "createdAt": "..." }
+  ]
+}
