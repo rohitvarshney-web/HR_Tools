@@ -194,7 +194,7 @@ async function appendToSheet(sheetId, valuesArray) {
   const sheets = await getSheetsService();
   const res = await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: 'Sheet1!A:Z',
+    range: 'Sheet1!A1',   // 👈 anchor at A1 so rows always start from column A
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: {
