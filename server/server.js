@@ -1,6 +1,9 @@
 // server.js
 // Backend: OAuth (Google), file upload -> Drive, append -> Google Sheets,
 // simple JSON file persistence for openings/responses/users, JWT auth.
+//
+// This version keeps users on file only and adds detailed path/log debugging
+// so you can see exactly which data.json is being read by the running server.
 
 require('dotenv').config();
 const express = require('express');
@@ -21,30 +24,72 @@ app.use(express.urlencoded({ extended: true }));
 const PORT = process.env.PORT || 4000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 const JWT_SECRET = process.env.JWT_SECRET || 'please-change-this-secret';
+const ADMIN_SECRET = process.env.ADMIN_SECRET || null; // set this for admin/debug endpoints
 
 // --- Data persistence (local JSON file)
-const DATA_DIR = path.resolve(__dirname, 'server_data');
+// Use override from env if you want to point to a specific file path
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.resolve(__dirname, 'server_data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-const DATA_FILE = path.join(DATA_DIR, 'data.json');
+
+// Deterministic data file path (can be overridden with DATA_FILE env)
+const DATA_FILE = process.env.DATA_FILE ? path.resolve(process.env.DATA_FILE) : path.join(DATA_DIR, 'data.json');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
+// Startup debug logging of environment and paths
+console.log('===== Server startup info =====');
+console.log('__dirname:', __dirname);
+console.log('process.cwd():', process.cwd());
+console.log('Resolved DATA_DIR:', DATA_DIR);
+console.log('Resolved DATA_FILE:', DATA_FILE);
+console.log('UPLOADS_DIR:', UPLOADS_DIR);
+console.log('NODE_ENV:', process.env.NODE_ENV || 'not-set');
+console.log('ADMIN_SECRET set:', !!ADMIN_SECRET);
+console.log('================================');
+
+function safeSlice(s, n = 2000) {
+  try { return String(s).slice(0, n); } catch (e) { return '<unable to slice>'; }
+}
+
+// readData / writeData with extra logging (shows which file is read and its content preview)
 function readData() {
   try {
+    console.log('[readData] called. reading file:', DATA_FILE);
     if (!fs.existsSync(DATA_FILE)) {
+      console.log('[readData] data file not found. initializing default data.json at', DATA_FILE);
       const base = { openings: [], responses: [], users: [] };
-      fs.writeFileSync(DATA_FILE, JSON.stringify(base, null, 2));
+      fs.writeFileSync(DATA_FILE, JSON.stringify(base, null, 2), 'utf8');
       return base;
     }
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
-    return JSON.parse(raw || '{}');
+    if (!raw || raw.trim().length === 0) {
+      console.warn('[readData] data file exists but is empty. reinitializing default structure.');
+      const base = { openings: [], responses: [], users: [] };
+      fs.writeFileSync(DATA_FILE, JSON.stringify(base, null, 2), 'utf8');
+      return base;
+    }
+    console.log('[readData] data file raw (preview):', safeSlice(raw, 2000));
+    const parsed = JSON.parse(raw);
+    if (!parsed.openings) parsed.openings = [];
+    if (!parsed.responses) parsed.responses = [];
+    if (!parsed.users) parsed.users = [];
+    console.log('[readData] loaded counts -> openings:', parsed.openings.length, 'responses:', parsed.responses.length, 'users:', parsed.users.length);
+    return parsed;
   } catch (err) {
-    console.error('readData err', err);
+    console.error('[readData] ERROR reading/parsing data file:', err && (err.stack || err.message));
+    // return a safe default so server remains functional
     return { openings: [], responses: [], users: [] };
   }
 }
+
 function writeData(obj) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(obj, null, 2));
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify(obj, null, 2), 'utf8');
+    console.log('[writeData] wrote data to', DATA_FILE);
+  } catch (err) {
+    console.error('[writeData] ERROR writing data file:', err && (err.stack || err.message));
+    throw err;
+  }
 }
 
 // serve fallback uploads if Drive fails
@@ -54,51 +99,38 @@ app.use('/uploads', express.static(UPLOADS_DIR));
 const DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 
-// Scopes needed
 const SCOPES = [
   'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/drive.file',
   'https://www.googleapis.com/auth/spreadsheets'
 ];
 
-// Auth client cache
 let googleAuthInstance = null;
-
-/**
- * getAuthClient:
- * - If GOOGLE_SERVICE_ACCOUNT_CREDS is set (JSON string), parse and use credentials.
- * - Else if GOOGLE_SERVICE_ACCOUNT_FILE is set, use keyFile.
- * - Else throw.
- *
- * Returns a GoogleAuth instance.
- */
 function getAuthClient() {
   if (googleAuthInstance) return googleAuthInstance;
 
-  // Option 1: JSON creds in env var
   if (process.env.GOOGLE_SERVICE_ACCOUNT_CREDS) {
     try {
       const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_CREDS);
-      console.log('Using GOOGLE_SERVICE_ACCOUNT_CREDS (env JSON). client_email=', creds.client_email);
+      console.log('[getAuthClient] Using GOOGLE_SERVICE_ACCOUNT_CREDS. client_email=', creds.client_email);
       googleAuthInstance = new google.auth.GoogleAuth({
         credentials: creds,
         scopes: SCOPES
       });
       return googleAuthInstance;
     } catch (err) {
-      console.error('Failed parsing GOOGLE_SERVICE_ACCOUNT_CREDS:', err && err.message);
+      console.error('[getAuthClient] Failed parsing GOOGLE_SERVICE_ACCOUNT_CREDS:', err && err.message);
       throw err;
     }
   }
 
-  // Option 2: key file path
   if (process.env.GOOGLE_SERVICE_ACCOUNT_FILE) {
     const keyFile = process.env.GOOGLE_SERVICE_ACCOUNT_FILE;
+    console.log('[getAuthClient] Using GOOGLE_SERVICE_ACCOUNT_FILE:', keyFile);
     if (!fs.existsSync(keyFile)) {
-      console.error('GOOGLE_SERVICE_ACCOUNT_FILE path does not exist:', keyFile);
+      console.error('[getAuthClient] GOOGLE_SERVICE_ACCOUNT_FILE path does not exist:', keyFile);
       throw new Error('GOOGLE_SERVICE_ACCOUNT_FILE missing on disk: ' + keyFile);
     }
-    console.log('Using GOOGLE_SERVICE_ACCOUNT_FILE at', keyFile);
     googleAuthInstance = new google.auth.GoogleAuth({
       keyFile,
       scopes: SCOPES
@@ -114,34 +146,20 @@ async function getDriveService() {
   const client = await auth.getClient();
   return google.drive({ version: 'v3', auth: client });
 }
-
 async function getSheetsService() {
   const auth = getAuthClient();
   const client = await auth.getClient();
   return google.sheets({ version: 'v4', auth: client });
 }
 
-/**
- * uploadToDrive
- * - fileBuffer: Buffer
- * - filename: string
- * - mimeType: string
- *
- * Returns: webViewLink string on success.
- *
- * Throws on fatal errors (caller can catch and fallback to local save).
- */
 async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet-stream') {
   if (!DRIVE_FOLDER_ID) throw new Error('DRIVE_FOLDER_ID not set in env');
   const drive = await getDriveService();
-
-  // Convert buffer to readable stream for googleapis multipart handler.
   const bufferStream = new stream.PassThrough();
   bufferStream.end(Buffer.isBuffer(fileBuffer) ? fileBuffer : Buffer.from(fileBuffer));
 
-  console.log(`Uploading to Drive: name=${filename} size=${(fileBuffer ? fileBuffer.length : 0)} mime=${mimeType} folder=${DRIVE_FOLDER_ID}`);
+  console.log(`[uploadToDrive] Uploading to Drive: name=${filename} size=${(fileBuffer ? fileBuffer.length : 0)} mime=${mimeType} folder=${DRIVE_FOLDER_ID}`);
 
-  // Use the stream as media.body
   const created = await drive.files.create({
     requestBody: {
       name: filename,
@@ -158,48 +176,39 @@ async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet
   const fileId = created.data && created.data.id;
   if (!fileId) throw new Error('Drive returned no file id');
 
-  console.log('Drive file created id=', fileId);
+  console.log('[uploadToDrive] Drive file created id=', fileId);
 
-  // Make file viewable via link (anyoneWithLink). This may fail in some org policies.
   try {
     await drive.permissions.create({
       fileId,
-      requestBody: {
-        role: 'reader',
-        type: 'anyone'
-      },
+      requestBody: { role: 'reader', type: 'anyone' },
       supportsAllDrives: true
     });
-    console.log('Set permission: anyone reader on fileId=', fileId);
   } catch (err) {
-    // Not fatal — many orgs block "anyone" sharing; we'll continue and return webViewLink if available.
-    console.warn('Failed to set "anyone" permission (may be org policy). Continuing. err=', err && err.message);
+    console.warn('[uploadToDrive] Failed to set "anyone" permission (org policy may block):', err && err.message);
   }
 
-  // get webViewLink
   try {
-    const meta = await drive.files.get({ fileId, fields: 'id, webViewLink, webContentLink' });
+    const meta = await drive.files.get({ fileId, fields: 'id, webViewLink, webContentLink', supportsAllDrives: true });
     const link = meta.data.webViewLink || meta.data.webContentLink || `https://drive.google.com/file/d/${fileId}/view`;
-    console.log('Drive link for fileId=', fileId, '->', link);
+    console.log('[uploadToDrive] Drive link:', link);
     return link;
   } catch (err) {
-    console.warn('drive.files.get failed for fileId=', fileId, err && err.message);
+    console.warn('[uploadToDrive] drive.files.get failed:', err && err.message);
     return `https://drive.google.com/file/d/${fileId}/view`;
   }
 }
 
-// Append row to sheets (changed to anchor at A1 so appended rows always start at column A)
+// Append row to sheets (anchor at A1 behaviour retained)
 async function appendToSheet(sheetId, valuesArray) {
   if (!sheetId) throw new Error('GOOGLE_SHEET_ID not set in env');
   const sheets = await getSheetsService();
   const res = await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: 'Sheet1!A1',   // <- anchor at A1 so new rows start at column A
+    range: 'Sheet1!A:Z',
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
-    requestBody: {
-      values: [valuesArray]
-    }
+    requestBody: { values: [valuesArray] }
   });
   return res.status === 200 || res.status === 201;
 }
@@ -238,22 +247,40 @@ if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET
     callbackURL: process.env.GOOGLE_OAUTH_CALLBACK || `${FRONTEND_URL}/auth/google/callback`
   }, async (accessToken, refreshToken, profile, done) => {
     try {
-      const data = readData();
+      // Read data file each sign-in attempt so we always use the file on disk (no in-memory cache).
+      console.log('[OAuth] sign-in attempt. reading allowlist from file:', DATA_FILE);
+      const data = readData(); // readData logs detailed info
       const email = profile.emails && profile.emails[0] && profile.emails[0].value;
-      let user = data.users.find(u => u.email === email);
-      if (!user) {
-        user = {
-          id: `u_${Date.now()}`,
-          email,
-          name: profile.displayName || '',
-          role: 'recruiter',
-          createdAt: new Date().toISOString()
-        };
+      console.log('[OAuth] attempt email=', email, 'profile.id=', profile.id);
+
+      // Normalize emails to lower-case for comparison
+      const allowlisted = (data.users || []).filter(u => (u.email || '').toLowerCase() === (email || '').toLowerCase());
+      console.log('[OAuth] allowlisted matches found:', allowlisted.length, allowlisted.map(u => u.email));
+
+      if (!allowlisted || allowlisted.length === 0) {
+        console.warn('[OAuth] attempt by non-allowlisted email:', email);
+        return done(null, false, { message: 'email_not_allowed', email });
+      }
+
+      // Use the first match
+      let user = allowlisted[0];
+      if (!user.id) user.id = `u_${Date.now()}`;
+      user.name = user.name || profile.displayName || '';
+      user.createdAt = user.createdAt || new Date().toISOString();
+
+      // Ensure the file contains this exact record (update if needed)
+      const idx = (data.users || []).findIndex(u => (u.email || '').toLowerCase() === (email || '').toLowerCase());
+      if (idx === -1) {
         data.users.push(user);
         writeData(data);
+      } else {
+        data.users[idx] = user;
+        writeData(data);
       }
+
       return done(null, user);
     } catch (err) {
+      console.error('[OAuth] Strategy error:', err && (err.stack || err.message));
       return done(err);
     }
   }));
@@ -270,15 +297,63 @@ app.get('/auth/google', (req, res, next) => {
 
 app.get('/auth/google/callback', (req, res, next) => {
   if (!passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
-  passport.authenticate('google', { session: false }, (err, user) => {
-    if (err || !user) {
-      console.error('OAuth callback error', err);
+  passport.authenticate('google', { session: false }, (err, user, info) => {
+    if (err) {
+      console.error('[OAuth callback] error', err);
       return res.status(500).json({ error: 'oauth_failed' });
+    }
+    if (!user) {
+      console.warn('[OAuth callback] denied:', info);
+      const redirectTo = `${FRONTEND_URL}?oauth_error=${encodeURIComponent(info?.message || 'denied')}`;
+      return res.redirect(redirectTo);
     }
     const token = signUserToken(user);
     const redirectTo = `${FRONTEND_URL}?token=${encodeURIComponent(token)}`;
     return res.redirect(redirectTo);
   })(req, res, next);
+});
+
+// Admin debug endpoints: protected by ADMIN_SECRET header value (x-admin-secret)
+function requireAdminSecret(req, res, next) {
+  if (!ADMIN_SECRET) return res.status(403).json({ error: 'admin_secret_not_configured' });
+  const secret = req.headers['x-admin-secret'];
+  if (!secret || secret !== ADMIN_SECRET) return res.status(403).json({ error: 'invalid_admin_secret' });
+  return next();
+}
+
+// Debug: return the resolved data file path and parsed contents (protected)
+app.get('/admin/debug-datafile', requireAdminSecret, (req, res) => {
+  try {
+    const exists = fs.existsSync(DATA_FILE);
+    const raw = exists ? fs.readFileSync(DATA_FILE, 'utf8') : null;
+    let parsed = null;
+    try { parsed = raw ? JSON.parse(raw) : null; } catch (e) { parsed = null; }
+    return res.json({ DATA_FILE, exists, rawPreview: raw ? safeSlice(raw, 2000) : null, parsed });
+  } catch (err) {
+    return res.status(500).json({ error: 'failed', message: err && err.message });
+  }
+});
+
+// Admin: list users (protected)
+app.get('/admin/users', requireAdminSecret, (req, res) => {
+  const data = readData();
+  return res.json({ users: data.users || [] });
+});
+
+// Admin: add user to allowlist (protected) - body: { email, name, role }
+app.post('/admin/users', requireAdminSecret, (req, res) => {
+  const { email, name, role } = req.body || {};
+  if (!email) return res.status(400).json({ error: 'missing_email' });
+  const data = readData();
+  if (!data.users) data.users = [];
+  const emailLower = (email || '').toLowerCase();
+  const existing = data.users.find(u => (u.email || '').toLowerCase() === emailLower);
+  if (existing) return res.status(409).json({ error: 'user_exists', user: existing });
+  const u = { id: `u_${Date.now()}`, email, name: name || '', role: role || 'recruiter', createdAt: new Date().toISOString() };
+  data.users.push(u);
+  writeData(data);
+  console.log('[admin] added allowlist user:', u.email);
+  return res.json({ ok: true, user: u });
 });
 
 // API: get current user
@@ -334,7 +409,6 @@ app.delete('/api/openings/:id', authMiddleware, (req, res) => {
   return res.json({ ok: true });
 });
 
-// Responses (protected)
 app.get('/api/responses', authMiddleware, (req, res) => {
   const data = readData();
   return res.json(data.responses || []);
@@ -347,7 +421,6 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     const src = req.query.src || req.body.src || 'unknown';
     if (!openingId) return res.status(400).json({ error: 'missing opening id' });
 
-    // find opening title if available
     const data = readData();
     const opening = data.openings.find(o => o.id === openingId);
     const openingTitle = opening ? opening.title : null;
@@ -357,16 +430,13 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     if (req.file && req.file.buffer) {
       const filename = `${Date.now()}_${(req.file.originalname || 'resume')}`;
       try {
-        // Attempt Drive upload first
         resumeLink = await uploadToDrive(req.file.buffer, filename, req.file.mimetype || 'application/octet-stream');
         console.log('Drive upload success, resumeLink=', resumeLink);
       } catch (err) {
-        // Drive failed — log and fallback to saving locally and serving via /uploads
         console.error('Drive upload failed:', err && (err.stack || err.message));
         try {
           const localPath = path.join(UPLOADS_DIR, filename);
           fs.writeFileSync(localPath, req.file.buffer);
-          // construct absolute URL based on incoming request host
           const host = req.get('host');
           const protocol = req.protocol;
           resumeLink = `${protocol}://${host}/uploads/${encodeURIComponent(filename)}`;
