@@ -1,6 +1,11 @@
 // server.js
 // Backend: OAuth (Google), file upload -> Drive, append -> Google Sheets,
 // simple JSON file persistence for openings/responses/users, JWT auth.
+//
+// Changes in this version:
+// - OAuth allowlist check is case-insensitive and will *not* auto-create users.
+// - When sign-in is denied we redirect back to FRONTEND_URL with ?error=email_not_allowed
+// - Added improved logging around allowlist checks.
 
 require('dotenv').config();
 const express = require('express');
@@ -37,12 +42,7 @@ function readData() {
       return base;
     }
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
-    // ensure we always return arrays for expected keys
-    const parsed = JSON.parse(raw || '{}');
-    parsed.openings = Array.isArray(parsed.openings) ? parsed.openings : [];
-    parsed.responses = Array.isArray(parsed.responses) ? parsed.responses : [];
-    parsed.users = Array.isArray(parsed.users) ? parsed.users : [];
-    return parsed;
+    return JSON.parse(raw || '{}');
   } catch (err) {
     console.error('readData err', err);
     return { openings: [], responses: [], users: [] };
@@ -74,8 +74,6 @@ let googleAuthInstance = null;
  * - If GOOGLE_SERVICE_ACCOUNT_CREDS is set (JSON string), parse and use credentials.
  * - Else if GOOGLE_SERVICE_ACCOUNT_FILE is set, use keyFile.
  * - Else throw.
- *
- * Returns a GoogleAuth instance.
  */
 function getAuthClient() {
   if (googleAuthInstance) return googleAuthInstance;
@@ -133,20 +131,16 @@ async function getSheetsService() {
  * - mimeType: string
  *
  * Returns: webViewLink string on success.
- *
- * Throws on fatal errors (caller can catch and fallback to local save).
  */
 async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet-stream') {
   if (!DRIVE_FOLDER_ID) throw new Error('DRIVE_FOLDER_ID not set in env');
   const drive = await getDriveService();
 
-  // Convert buffer to readable stream for googleapis multipart handler.
   const bufferStream = new stream.PassThrough();
   bufferStream.end(Buffer.isBuffer(fileBuffer) ? fileBuffer : Buffer.from(fileBuffer));
 
   console.log(`Uploading to Drive: name=${filename} size=${(fileBuffer ? fileBuffer.length : 0)} mime=${mimeType} folder=${DRIVE_FOLDER_ID}`);
 
-  // Use the stream as media.body
   const created = await drive.files.create({
     requestBody: {
       name: filename,
@@ -177,13 +171,12 @@ async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet
     });
     console.log('Set permission: anyone reader on fileId=', fileId);
   } catch (err) {
-    // Not fatal — many orgs block "anyone" sharing; we'll continue and return webViewLink if available.
     console.warn('Failed to set "anyone" permission (may be org policy). Continuing. err=', err && err.message);
   }
 
   // get webViewLink
   try {
-    const meta = await drive.files.get({ fileId, fields: 'id, webViewLink, webContentLink', supportsAllDrives: true });
+    const meta = await drive.files.get({ fileId, fields: 'id, webViewLink, webContentLink' });
     const link = meta.data.webViewLink || meta.data.webContentLink || `https://drive.google.com/file/d/${fileId}/view`;
     console.log('Drive link for fileId=', fileId, '->', link);
     return link;
@@ -193,13 +186,13 @@ async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet
   }
 }
 
-// Append row to sheets (changed to anchor at A1 so appended rows always start at column A)
+// Append row to sheets (anchor at A1 so rows start at column A)
 async function appendToSheet(sheetId, valuesArray) {
   if (!sheetId) throw new Error('GOOGLE_SHEET_ID not set in env');
   const sheets = await getSheetsService();
   const res = await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: 'Sheet1!A1',   // anchor at A1 so new rows start at column A
+    range: 'Sheet1!A1',
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: {
@@ -232,7 +225,7 @@ function authMiddleware(req, res, next) {
   }
 }
 
-// Passport Google OAuth
+// Passport Google OAuth (allowlist check)
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 
@@ -240,58 +233,32 @@ if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET
   passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_OAUTH_CLIENT_ID,
     clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
-    // note: callbackURL should match your Google Console redirect URI
     callbackURL: process.env.GOOGLE_OAUTH_CALLBACK || `${FRONTEND_URL}/auth/google/callback`
-  }, async (accessToken, refreshToken, profile, done) => {
+  },
+  // NOTE: we deliberately only allow sign-in for emails present in server_data/data.json -> users[]
+  async (accessToken, refreshToken, profile, done) => {
     try {
-      // Extract primary email (if present)
-      const email = (profile.emails && profile.emails[0] && profile.emails[0].value) ? String(profile.emails[0].value).toLowerCase() : null;
-      console.log('OAuth incoming email:', email);
-
-      if (!email) {
-        console.warn('OAuth attempt with no email in profile');
-        return done(null, false, { message: 'no_email' });
-      }
-
-      // Read allowed users from data.json
       const data = readData();
-      // Normalize stored emails to lowercase for comparison
-      const allowed = data.users || [];
-      const match = allowed.find(u => {
-        if (!u || !u.email) return false;
-        try { return String(u.email).toLowerCase() === email; } catch (e) { return false; }
-      });
+      const email = profile.emails && profile.emails[0] && profile.emails[0].value;
+      const normalized = (email || '').toLowerCase();
 
-      if (!match) {
-        // Deny login if email not in allowlist
+      console.log('OAuth sign-in attempt email=', email, 'id=', profile.id);
+
+      // find allowlisted user by email (case-insensitive)
+      const user = (data.users || []).find(u => (u.email || '').toLowerCase() === normalized);
+
+      if (!user) {
+        // Deny sign-in if not in allowlist. Do not auto-create.
         console.warn('OAuth attempt by non-allowlisted email:', email);
-        return done(null, false, { message: 'email_not_allowed' });
+        // Pass a custom info object so the callback can detect reason
+        return done(null, false, { message: 'email_not_allowed', email });
       }
 
-      // If allowed, return stored user object (preserve role if present)
-      const user = {
-        id: match.id || `u_${Date.now()}`,
-        email: String(match.email).toLowerCase(),
-        name: match.name || profile.displayName || '',
-        role: match.role || 'recruiter',
-        createdAt: match.createdAt || new Date().toISOString()
-      };
-
-      // Optionally update stored user with profile name if missing
-      // (do NOT change email or role automatically)
-      if (!match.createdAt || !match.name) {
-        // update stored record for convenience
-        const idx = data.users.findIndex(x => x.email && String(x.email).toLowerCase() === email);
-        if (idx !== -1) {
-          if (!data.users[idx].name) data.users[idx].name = user.name;
-          if (!data.users[idx].createdAt) data.users[idx].createdAt = user.createdAt;
-          writeData(data);
-        }
-      }
-
+      // If a user exists, return it
+      console.log('OAuth allowed for user:', user.email, 'id=', user.id);
       return done(null, user);
     } catch (err) {
-      console.error('Error in GoogleStrategy verify callback', err && (err.stack || err.message));
+      console.error('Error in OAuth verify callback', err && err.message);
       return done(err);
     }
   }));
@@ -300,35 +267,32 @@ if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET
   console.warn('Google OAuth not configured: GOOGLE_OAUTH_CLIENT_ID/SECRET missing');
 }
 
-// OAuth routes
+// OAuth entry route
 app.get('/auth/google', (req, res, next) => {
-  if (!passport._strategy || !passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
-  // Start OAuth flow
+  if (!passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
   passport.authenticate('google', { scope: ['profile', 'email'] })(req, res, next);
 });
 
-// callback: handle allowlist denial explicitly and redirect to frontend with token or error
+// OAuth callback: handle allow/deny and redirect to frontend with token or error
 app.get('/auth/google/callback', (req, res, next) => {
-  if (!passport._strategy || !passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
+  if (!passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
 
   passport.authenticate('google', { session: false }, (err, user, info) => {
-    // info may contain { message: 'email_not_allowed' } if denied
     if (err) {
-      console.error('OAuth callback error', err && (err.stack || err.message));
-      // redirect back with generic error
-      const redirectTo = `${FRONTEND_URL}?error=oauth_failed`;
-      return res.redirect(redirectTo);
+      console.error('OAuth callback error', err);
+      // send user to frontend with error
+      return res.redirect(`${FRONTEND_URL}?error=oauth_error`);
     }
 
     if (!user) {
-      // Denied or not allowed - pass message if available
-      const message = (info && info.message) ? info.message : 'oauth_failed';
-      console.warn('OAuth denied:', message);
-      const redirectTo = `${FRONTEND_URL}?error=${encodeURIComponent(message)}`;
-      return res.redirect(redirectTo);
+      // If Passport provided info about denial, use it
+      const reason = (info && info.message) ? info.message : 'oauth_failed';
+      console.warn('OAuth denied:', reason, 'info=', info);
+      // redirect back to frontend with error query param
+      return res.redirect(`${FRONTEND_URL}?error=${encodeURIComponent(reason)}`);
     }
 
-    // Sign JWT and redirect back to frontend with token
+    // successful sign-in -> issue JWT and redirect with token
     const token = signUserToken(user);
     const redirectTo = `${FRONTEND_URL}?token=${encodeURIComponent(token)}`;
     return res.redirect(redirectTo);
@@ -338,10 +302,9 @@ app.get('/auth/google/callback', (req, res, next) => {
 // API: get current user
 app.get('/api/me', authMiddleware, (req, res) => {
   const data = readData();
-  // find by id or email (normalize email to lowercase)
-  const user = data.users.find(u => (u.id && u.id === req.user.id) || (u.email && String(u.email).toLowerCase() === String(req.user.email).toLowerCase()));
+  const user = data.users.find(u => u.id === req.user.id || u.email === req.user.email);
   if (!user) return res.status(404).json({ error: 'user_not_found' });
-  return res.json({ id: user.id, email: String(user.email).toLowerCase(), name: user.name, role: user.role });
+  return res.json({ id: user.id, email: user.email, name: user.name, role: user.role });
 });
 
 // Openings CRUD (protected)
@@ -451,7 +414,7 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     data.responses.unshift(resp);
     writeData(data);
 
-    // Append to sheet (best-effort)
+    // Append to sheet (best-effort). Anchor to A1 so new rows begin at column A.
     try {
       const row = [ new Date().toISOString(), openingId, openingTitle || '', src, resumeLink || '', JSON.stringify(answers) ];
       if (SHEET_ID) {
