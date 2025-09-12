@@ -134,8 +134,9 @@ async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet
     },
     media: {
       mimeType,
-      body: bufferStream
+      body: Buffer.from(fileBuffer),
     },
+    supportsAllDrives: true,
     fields: 'id, webViewLink, webContentLink'
   });
 
