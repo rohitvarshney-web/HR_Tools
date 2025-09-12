@@ -37,7 +37,12 @@ function readData() {
       return base;
     }
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
-    return JSON.parse(raw || '{}');
+    // ensure we always return arrays for expected keys
+    const parsed = JSON.parse(raw || '{}');
+    parsed.openings = Array.isArray(parsed.openings) ? parsed.openings : [];
+    parsed.responses = Array.isArray(parsed.responses) ? parsed.responses : [];
+    parsed.users = Array.isArray(parsed.users) ? parsed.users : [];
+    return parsed;
   } catch (err) {
     console.error('readData err', err);
     return { openings: [], responses: [], users: [] };
@@ -178,7 +183,7 @@ async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet
 
   // get webViewLink
   try {
-    const meta = await drive.files.get({ fileId, fields: 'id, webViewLink, webContentLink' });
+    const meta = await drive.files.get({ fileId, fields: 'id, webViewLink, webContentLink', supportsAllDrives: true });
     const link = meta.data.webViewLink || meta.data.webContentLink || `https://drive.google.com/file/d/${fileId}/view`;
     console.log('Drive link for fileId=', fileId, '->', link);
     return link;
@@ -188,13 +193,13 @@ async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet
   }
 }
 
-// Append row to sheets (anchor at A1 so appended rows start from column A)
+// Append row to sheets (changed to anchor at A1 so appended rows always start at column A)
 async function appendToSheet(sheetId, valuesArray) {
   if (!sheetId) throw new Error('GOOGLE_SHEET_ID not set in env');
   const sheets = await getSheetsService();
   const res = await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: 'Sheet1!A1',   // anchor at A1 ensures appended row uses column A as first cell
+    range: 'Sheet1!A1',   // anchor at A1 so new rows start at column A
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: {
@@ -227,50 +232,66 @@ function authMiddleware(req, res, next) {
   }
 }
 
-// Passport Google OAuth (allowlist behavior)
+// Passport Google OAuth
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 
-function normEmail(e) {
-  return (e || '').toString().trim().toLowerCase();
-}
-
-// We will only allow sign-ins where the email is already present in server_data/data.json users array.
-// This prevents automatically creating users on first Google sign-in.
 if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET) {
   passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_OAUTH_CLIENT_ID,
     clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+    // note: callbackURL should match your Google Console redirect URI
     callbackURL: process.env.GOOGLE_OAUTH_CALLBACK || `${FRONTEND_URL}/auth/google/callback`
   }, async (accessToken, refreshToken, profile, done) => {
     try {
-      const data = readData();
-      const email = normEmail(profile.emails && profile.emails[0] && profile.emails[0].value);
+      // Extract primary email (if present)
+      const email = (profile.emails && profile.emails[0] && profile.emails[0].value) ? String(profile.emails[0].value).toLowerCase() : null;
+      console.log('OAuth incoming email:', email);
+
       if (!email) {
-        return done(null, false, { message: 'no_email_in_profile' });
+        console.warn('OAuth attempt with no email in profile');
+        return done(null, false, { message: 'no_email' });
       }
 
-      // Find the user in your allowlist
-      let user = (data.users || []).find(u => normEmail(u.email) === email);
+      // Read allowed users from data.json
+      const data = readData();
+      // Normalize stored emails to lowercase for comparison
+      const allowed = data.users || [];
+      const match = allowed.find(u => {
+        if (!u || !u.email) return false;
+        try { return String(u.email).toLowerCase() === email; } catch (e) { return false; }
+      });
 
-      if (!user) {
-        // Not allowed — reject sign-in
+      if (!match) {
+        // Deny login if email not in allowlist
         console.warn('OAuth attempt by non-allowlisted email:', email);
         return done(null, false, { message: 'email_not_allowed' });
       }
 
-      // Ensure role exists
-      if (!user.role) user.role = 'recruiter';
+      // If allowed, return stored user object (preserve role if present)
+      const user = {
+        id: match.id || `u_${Date.now()}`,
+        email: String(match.email).toLowerCase(),
+        name: match.name || profile.displayName || '',
+        role: match.role || 'recruiter',
+        createdAt: match.createdAt || new Date().toISOString()
+      };
 
-      // Optional: update name from profile if missing
-      if (!user.name && profile.displayName) {
-        user.name = profile.displayName;
-        writeData(data);
+      // Optionally update stored user with profile name if missing
+      // (do NOT change email or role automatically)
+      if (!match.createdAt || !match.name) {
+        // update stored record for convenience
+        const idx = data.users.findIndex(x => x.email && String(x.email).toLowerCase() === email);
+        if (idx !== -1) {
+          if (!data.users[idx].name) data.users[idx].name = user.name;
+          if (!data.users[idx].createdAt) data.users[idx].createdAt = user.createdAt;
+          writeData(data);
+        }
       }
 
       return done(null, user);
     } catch (err) {
-      console.error('GoogleStrategy error', err && (err.stack || err.message));
+      console.error('Error in GoogleStrategy verify callback', err && (err.stack || err.message));
       return done(err);
     }
   }));
@@ -282,24 +303,32 @@ if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET
 // OAuth routes
 app.get('/auth/google', (req, res, next) => {
   if (!passport._strategy || !passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
+  // Start OAuth flow
   passport.authenticate('google', { scope: ['profile', 'email'] })(req, res, next);
 });
 
+// callback: handle allowlist denial explicitly and redirect to frontend with token or error
 app.get('/auth/google/callback', (req, res, next) => {
   if (!passport._strategy || !passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
 
   passport.authenticate('google', { session: false }, (err, user, info) => {
+    // info may contain { message: 'email_not_allowed' } if denied
     if (err) {
-      console.error('OAuth callback error (err):', err && (err.stack || err.message));
-      return res.redirect(`${FRONTEND_URL}?oauth_error=${encodeURIComponent(err.message || 'oauth_error')}`);
-    }
-    if (!user) {
-      const reason = (info && info.message) ? info.message : 'oauth_denied';
-      console.warn('OAuth denied:', reason);
-      return res.redirect(`${FRONTEND_URL}?oauth_error=${encodeURIComponent(reason)}`);
+      console.error('OAuth callback error', err && (err.stack || err.message));
+      // redirect back with generic error
+      const redirectTo = `${FRONTEND_URL}?error=oauth_failed`;
+      return res.redirect(redirectTo);
     }
 
-    // Successful login — create JWT and redirect with token
+    if (!user) {
+      // Denied or not allowed - pass message if available
+      const message = (info && info.message) ? info.message : 'oauth_failed';
+      console.warn('OAuth denied:', message);
+      const redirectTo = `${FRONTEND_URL}?error=${encodeURIComponent(message)}`;
+      return res.redirect(redirectTo);
+    }
+
+    // Sign JWT and redirect back to frontend with token
     const token = signUserToken(user);
     const redirectTo = `${FRONTEND_URL}?token=${encodeURIComponent(token)}`;
     return res.redirect(redirectTo);
@@ -309,20 +338,16 @@ app.get('/auth/google/callback', (req, res, next) => {
 // API: get current user
 app.get('/api/me', authMiddleware, (req, res) => {
   const data = readData();
-  const user = data.users.find(u => u.id === req.user.id || u.email === req.user.email);
+  // find by id or email (normalize email to lowercase)
+  const user = data.users.find(u => (u.id && u.id === req.user.id) || (u.email && String(u.email).toLowerCase() === String(req.user.email).toLowerCase()));
   if (!user) return res.status(404).json({ error: 'user_not_found' });
-  return res.json({ id: user.id, email: user.email, name: user.name, role: user.role });
+  return res.json({ id: user.id, email: String(user.email).toLowerCase(), name: user.name, role: user.role });
 });
 
 // Openings CRUD (protected)
 app.get('/api/openings', authMiddleware, (req, res) => {
   const data = readData();
   return res.json(data.openings || []);
-});
-
-app.post('/api.openings', authMiddleware, (req, res) => {
-  // keep original endpoint name used in your app if any difference; rarely used
-  return res.status(404).json({ error: 'not_implemented' });
 });
 
 app.post('/api/openings', authMiddleware, (req, res) => {
