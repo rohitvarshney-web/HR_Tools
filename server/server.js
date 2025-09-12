@@ -1,8 +1,7 @@
-// server.js
+// server.js (updated)
 // Backend: OAuth (Google), file upload -> Drive, append -> Google Sheets,
-// simple JSON file persistence for openings/responses/users, JWT auth.
-// Added public endpoints to persist openings/schema without authentication.
-
+// JSON file persistence for openings -> server_data/openings.json
+// and forms -> server_data/forms.json; existing data.json kept for responses/users.
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -23,48 +22,102 @@ const PORT = process.env.PORT || 4000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 const JWT_SECRET = process.env.JWT_SECRET || 'please-change-this-secret';
 
-// --- Data persistence (local JSON file)
+// Data dirs & files
 const DATA_DIR = path.resolve(__dirname, 'server_data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-const DATA_FILE = path.join(DATA_DIR, 'data.json');
+
+const DATA_FILE = path.join(DATA_DIR, 'data.json'); // existing legacy file (responses/users)
+const OPENINGS_FILE = path.join(DATA_DIR, 'openings.json'); // NEW canonical openings storage
+const FORMS_FILE = path.join(DATA_DIR, 'forms.json'); // NEW forms storage
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-// read/write helpers (with logs)
+// ---------- Safe file helpers (atomic write)
+function readJsonFile(filePath, defaultVal = null) {
+  try {
+    if (!fs.existsSync(filePath)) return defaultVal;
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return raw ? JSON.parse(raw) : defaultVal;
+  } catch (err) {
+    console.error('[readJsonFile] error reading', filePath, err && err.message);
+    return defaultVal;
+  }
+}
+function writeJsonFileAtomic(filePath, obj) {
+  try {
+    const tmp = filePath + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf8');
+    fs.renameSync(tmp, filePath);
+    console.log(`[writeJsonFileAtomic] wrote ${filePath} (${Array.isArray(obj) ? obj.length : Object.keys(obj || {}).length})`);
+  } catch (err) {
+    console.error('[writeJsonFileAtomic] failed to write', filePath, err && err.stack);
+    throw err;
+  }
+}
+
+// ---------- Legacy data.json helpers (existing behavior)
 function readData() {
   try {
     if (!fs.existsSync(DATA_FILE)) {
       const base = { openings: [], responses: [], users: [] };
-      fs.writeFileSync(DATA_FILE, JSON.stringify(base, null, 2));
-      console.log('[readData] data file not found. initializing default data.json at', DATA_FILE);
+      writeJsonFileAtomic(DATA_FILE, base);
+      console.log('[readData] data.json not found -> initializing at', DATA_FILE);
       return base;
     }
-    console.log('[readData] called. reading file:', DATA_FILE);
+    console.log('[readData] reading', DATA_FILE);
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
-    const parsed = JSON.parse(raw || '{}');
-    console.log(`[readData] loaded counts -> openings: ${(parsed.openings||[]).length} responses: ${(parsed.responses||[]).length} users: ${(parsed.users||[]).length}`);
+    const parsed = raw ? JSON.parse(raw) : { openings: [], responses: [], users: [] };
+    console.log(`[readData] counts -> openings: ${(parsed.openings||[]).length} responses: ${(parsed.responses||[]).length} users: ${(parsed.users||[]).length}`);
     return parsed;
   } catch (err) {
-    console.error('readData err', err);
+    console.error('[readData] error', err && err.stack);
     return { openings: [], responses: [], users: [] };
   }
 }
 function writeData(obj) {
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(obj, null, 2));
-    console.log('[writeData] wrote data.json (openings:', (obj.openings||[]).length, 'responses:', (obj.responses||[]).length, 'users:', (obj.users||[]).length, ')');
+    writeJsonFileAtomic(DATA_FILE, obj);
+    console.log('[writeData] wrote data.json');
   } catch (err) {
-    console.error('writeData err', err);
+    console.error('[writeData] err', err && err.message);
   }
 }
+
+// Ensure canonical openings/forms files and do a non-destructive migration if needed
+function ensurePersistenceFilesAndMigrate() {
+  // ensure files exist
+  if (!fs.existsSync(OPENINGS_FILE)) {
+    const legacy = readData();
+    const legacyOpenings = Array.isArray(legacy.openings) ? legacy.openings : [];
+    if (legacyOpenings.length > 0) {
+      // migrate non-destructively: copy legacy openings into openings.json
+      writeJsonFileAtomic(OPENINGS_FILE, legacyOpenings);
+      console.log('[migration] migrated openings from data.json -> openings.json (count=' + legacyOpenings.length + ')');
+    } else {
+      writeJsonFileAtomic(OPENINGS_FILE, []);
+      console.log('[init] created empty openings.json');
+    }
+  } else {
+    // exists — leave as-is
+    console.log('[init] openings.json exists at', OPENINGS_FILE);
+  }
+
+  if (!fs.existsSync(FORMS_FILE)) {
+    writeJsonFileAtomic(FORMS_FILE, []);
+    console.log('[init] created empty forms.json');
+  } else {
+    console.log('[init] forms.json exists at', FORMS_FILE);
+  }
+}
+
+ensurePersistenceFilesAndMigrate();
 
 // serve fallback uploads if Drive fails
 app.use('/uploads', express.static(UPLOADS_DIR));
 
-// --- Google / Drive / Sheets config
+// -------------------- Google / Drive / Sheets config (unchanged) --------------------
 const DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
-
 const SCOPES = [
   'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/drive.file',
@@ -72,143 +125,56 @@ const SCOPES = [
 ];
 
 let googleAuthInstance = null;
-
-/**
- * getAuthClient:
- * - If GOOGLE_SERVICE_ACCOUNT_CREDS is set (JSON string), parse and use credentials.
- * - Else if GOOGLE_SERVICE_ACCOUNT_FILE is set, use keyFile.
- * - Else throw.
- *
- * Returns a GoogleAuth instance.
- */
 function getAuthClient() {
   if (googleAuthInstance) return googleAuthInstance;
-
-  // Option 1: JSON creds in env var
   if (process.env.GOOGLE_SERVICE_ACCOUNT_CREDS) {
-    try {
-      const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_CREDS);
-      console.log('Using GOOGLE_SERVICE_ACCOUNT_CREDS (env JSON). client_email=', creds.client_email);
-      googleAuthInstance = new google.auth.GoogleAuth({
-        credentials: creds,
-        scopes: SCOPES
-      });
-      return googleAuthInstance;
-    } catch (err) {
-      console.error('Failed parsing GOOGLE_SERVICE_ACCOUNT_CREDS:', err && err.message);
-      throw err;
-    }
-  }
-
-  // Option 2: key file path
-  if (process.env.GOOGLE_SERVICE_ACCOUNT_FILE) {
-    const keyFile = process.env.GOOGLE_SERVICE_ACCOUNT_FILE;
-    if (!fs.existsSync(keyFile)) {
-      console.error('GOOGLE_SERVICE_ACCOUNT_FILE path does not exist:', keyFile);
-      throw new Error('GOOGLE_SERVICE_ACCOUNT_FILE missing on disk: ' + keyFile);
-    }
-    console.log('Using GOOGLE_SERVICE_ACCOUNT_FILE at', keyFile);
-    googleAuthInstance = new google.auth.GoogleAuth({
-      keyFile,
-      scopes: SCOPES
-    });
+    const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_CREDS);
+    googleAuthInstance = new google.auth.GoogleAuth({ credentials: creds, scopes: SCOPES });
     return googleAuthInstance;
   }
-
-  throw new Error('No Google service account credentials configured. Set GOOGLE_SERVICE_ACCOUNT_CREDS or GOOGLE_SERVICE_ACCOUNT_FILE');
+  if (process.env.GOOGLE_SERVICE_ACCOUNT_FILE) {
+    const keyFile = process.env.GOOGLE_SERVICE_ACCOUNT_FILE;
+    if (!fs.existsSync(keyFile)) throw new Error('GOOGLE_SERVICE_ACCOUNT_FILE missing: ' + keyFile);
+    googleAuthInstance = new google.auth.GoogleAuth({ keyFile, scopes: SCOPES });
+    return googleAuthInstance;
+  }
+  throw new Error('No Google service account configured');
 }
-
-async function getDriveService() {
-  const auth = getAuthClient();
-  const client = await auth.getClient();
-  return google.drive({ version: 'v3', auth: client });
-}
-
-async function getSheetsService() {
-  const auth = getAuthClient();
-  const client = await auth.getClient();
-  return google.sheets({ version: 'v4', auth: client });
-}
-
-/**
- * uploadToDrive
- * - fileBuffer: Buffer
- * - filename: string
- * - mimeType: string
- *
- * Returns: webViewLink string on success.
- *
- * Throws on fatal errors (caller can catch and fallback to local save).
- */
+async function getDriveService() { const auth = getAuthClient(); const client = await auth.getClient(); return google.drive({ version: 'v3', auth: client }); }
+async function getSheetsService() { const auth = getAuthClient(); const client = await auth.getClient(); return google.sheets({ version: 'v4', auth: client }); }
 async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet-stream') {
-  if (!DRIVE_FOLDER_ID) throw new Error('DRIVE_FOLDER_ID not set in env');
+  if (!DRIVE_FOLDER_ID) throw new Error('DRIVE_FOLDER_ID not set');
   const drive = await getDriveService();
-
-  // Convert buffer to readable stream for googleapis multipart handler.
-  const bufferStream = new stream.PassThrough();
-  bufferStream.end(Buffer.isBuffer(fileBuffer) ? fileBuffer : Buffer.from(fileBuffer));
-
-  console.log(`Uploading to Drive: name=${filename} size=${(fileBuffer ? fileBuffer.length : 0)} mime=${mimeType} folder=${DRIVE_FOLDER_ID}`);
-
-  // Use the stream as media.body
+  const bufferStream = new stream.PassThrough(); bufferStream.end(Buffer.isBuffer(fileBuffer) ? fileBuffer : Buffer.from(fileBuffer));
   const created = await drive.files.create({
-    requestBody: {
-      name: filename,
-      parents: [DRIVE_FOLDER_ID],
-    },
-    media: {
-      mimeType,
-      body: bufferStream
-    },
+    requestBody: { name: filename, parents: [DRIVE_FOLDER_ID] },
+    media: { mimeType, body: bufferStream },
     supportsAllDrives: true,
     fields: 'id, webViewLink, webContentLink'
   });
-
   const fileId = created.data && created.data.id;
   if (!fileId) throw new Error('Drive returned no file id');
-
-  console.log('Drive file created id=', fileId);
-
-  // Make file viewable via link (anyoneWithLink). This may fail in some org policies.
   try {
-    await drive.permissions.create({
-      fileId,
-      requestBody: {
-        role: 'reader',
-        type: 'anyone'
-      },
-      supportsAllDrives: true
-    });
-    console.log('Set permission: anyone reader on fileId=', fileId);
+    await drive.permissions.create({ fileId, requestBody: { role: 'reader', type: 'anyone' }, supportsAllDrives: true });
   } catch (err) {
-    // Not fatal — many orgs block "anyone" sharing; we'll continue and return webViewLink if available.
-    console.warn('Failed to set "anyone" permission (may be org policy). Continuing. err=', err && err.message);
+    console.warn('drive.permissions.create failed (org policy?)', err && err.message);
   }
-
-  // get webViewLink
   try {
     const meta = await drive.files.get({ fileId, fields: 'id, webViewLink, webContentLink' });
-    const link = meta.data.webViewLink || meta.data.webContentLink || `https://drive.google.com/file/d/${fileId}/view`;
-    console.log('Drive link for fileId=', fileId, '->', link);
-    return link;
+    return meta.data.webViewLink || meta.data.webContentLink || `https://drive.google.com/file/d/${fileId}/view`;
   } catch (err) {
-    console.warn('drive.files.get failed for fileId=', fileId, err && err.message);
     return `https://drive.google.com/file/d/${fileId}/view`;
   }
 }
-
-// Append row to sheets (anchor at A1 so appended rows start at column A)
 async function appendToSheet(sheetId, valuesArray) {
-  if (!sheetId) throw new Error('GOOGLE_SHEET_ID not set in env');
+  if (!sheetId) throw new Error('GOOGLE_SHEET_ID not set');
   const sheets = await getSheetsService();
   const res = await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
     range: 'Sheet1!A1',
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
-    requestBody: {
-      values: [valuesArray]
-    }
+    requestBody: { values: [valuesArray] }
   });
   return res.status === 200 || res.status === 201;
 }
@@ -216,11 +182,8 @@ async function appendToSheet(sheetId, valuesArray) {
 // Multer (memory)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
-// JWT helpers
-function signUserToken(user) {
-  const payload = { id: user.id, email: user.email, role: user.role || 'recruiter' };
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
-}
+// JWT helpers & auth middleware (unchanged)
+function signUserToken(user) { const payload = { id: user.id, email: user.email, role: user.role || 'recruiter' }; return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' }); }
 function authMiddleware(req, res, next) {
   const auth = req.headers.authorization;
   if (!auth) return res.status(401).json({ error: 'missing_auth' });
@@ -236,10 +199,9 @@ function authMiddleware(req, res, next) {
   }
 }
 
-// Passport Google OAuth
+// Passport Google OAuth (unchanged)
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
-
 if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET) {
   passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_OAUTH_CLIENT_ID,
@@ -250,11 +212,7 @@ if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET
       const data = readData();
       const email = profile.emails && profile.emails[0] && profile.emails[0].value;
       let user = data.users.find(u => u.email === email);
-      // allowlist logic: if user exists in data.users, allow; else deny
-      if (!user) {
-        console.log('[OAuth] attempt email=', email, 'profile.id=', profile.id);
-        return done(null, false, { message: 'email_not_allowed', email });
-      }
+      if (!user) return done(null, false, { message: 'email_not_allowed', email });
       return done(null, user);
     } catch (err) {
       return done(err);
@@ -265,23 +223,16 @@ if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET
   console.warn('Google OAuth not configured: GOOGLE_OAUTH_CLIENT_ID/SECRET missing');
 }
 
-// OAuth routes
+// OAuth routes (unchanged)
 app.get('/auth/google', (req, res, next) => {
   if (!passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
   passport.authenticate('google', { scope: ['profile', 'email'] })(req, res, next);
 });
-
 app.get('/auth/google/callback', (req, res, next) => {
   if (!passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
   passport.authenticate('google', { session: false }, (err, user, info) => {
-    if (err) {
-      console.error('OAuth callback error', err);
-      return res.status(500).json({ error: 'oauth_failed' });
-    }
-    if (!user) {
-      console.warn('[OAuth callback] denied:', info || { message: 'denied' });
-      return res.status(403).json(info || { message: 'denied' });
-    }
+    if (err) { console.error('OAuth callback error', err); return res.status(500).json({ error: 'oauth_failed' }); }
+    if (!user) { return res.status(403).json(info || { message: 'denied' }); }
     const token = signUserToken(user);
     const redirectTo = `${FRONTEND_URL}?token=${encodeURIComponent(token)}`;
     return res.redirect(redirectTo);
@@ -296,15 +247,29 @@ app.get('/api/me', authMiddleware, (req, res) => {
   return res.json({ id: user.id, email: user.email, name: user.name, role: user.role });
 });
 
-// Openings CRUD (protected)
+/* -----------------------------
+   Openings endpoints (protected)
+   read/write from OPENINGS_FILE
+   ----------------------------- */
+
+// GET all openings (protected)
 app.get('/api/openings', authMiddleware, (req, res) => {
-  const data = readData();
-  return res.json(data.openings || []);
+  const openings = readJsonFile(OPENINGS_FILE, []);
+  return res.json(openings || []);
 });
 
+// GET single opening (protected)
+app.get('/api/openings/:id', authMiddleware, (req, res) => {
+  const openings = readJsonFile(OPENINGS_FILE, []);
+  const item = openings.find(o => o.id === req.params.id);
+  if (!item) return res.status(404).json({ error: 'opening_not_found' });
+  return res.json(item);
+});
+
+// CREATE opening (protected)
 app.post('/api/openings', authMiddleware, (req, res) => {
   const payload = req.body || {};
-  const data = readData();
+  const openings = readJsonFile(OPENINGS_FILE, []);
   const op = {
     id: `op_${Date.now()}`,
     title: payload.title || 'Untitled',
@@ -315,72 +280,141 @@ app.post('/api/openings', authMiddleware, (req, res) => {
     schema: payload.schema || null,
     createdAt: new Date().toISOString()
   };
-  data.openings.unshift(op);
-  writeData(data);
+  openings.unshift(op);
+  writeJsonFileAtomic(OPENINGS_FILE, openings);
+  console.log('[api POST /api/openings] created', op.id);
   return res.json(op);
 });
 
-// Protected endpoint to save schema (admin)
-app.post('/api/openings/:id/schema', authMiddleware, (req, res) => {
-  const id = req.params.id;
-  const schema = req.body.schema;
-  if (!schema || !Array.isArray(schema)) return res.status(400).json({ error: 'missing_or_invalid_schema' });
-  const data = readData();
-  const idx = data.openings.findIndex(o => o.id === id);
-  if (idx === -1) return res.status(404).json({ error: 'opening_not_found' });
-  data.openings[idx].schema = schema;
-  writeData(data);
-  return res.json({ ok: true, schema });
-});
-
+// UPDATE opening (protected)
 app.put('/api/openings/:id', authMiddleware, (req, res) => {
   const id = req.params.id;
-  const data = readData();
-  const idx = data.openings.findIndex(o => o.id === id);
+  const openings = readJsonFile(OPENINGS_FILE, []);
+  const idx = openings.findIndex(o => o.id === id);
   if (idx === -1) return res.status(404).json({ error: 'opening_not_found' });
-  const cur = data.openings[idx];
+  const cur = openings[idx];
   const fields = ['title','location','department','preferredSources','durationMins','schema'];
   fields.forEach(f => { if (req.body[f] !== undefined) cur[f] = req.body[f]; });
-  data.openings[idx] = cur;
-  writeData(data);
+  openings[idx] = cur;
+  writeJsonFileAtomic(OPENINGS_FILE, openings);
   return res.json(cur);
 });
 
+// DELETE opening (protected) — cascade delete forms
 app.delete('/api/openings/:id', authMiddleware, (req, res) => {
   const id = req.params.id;
+  // openings
+  const openings = readJsonFile(OPENINGS_FILE, []);
+  const filtered = openings.filter(o => o.id !== id);
+  if (filtered.length === openings.length) return res.status(404).json({ error: 'opening_not_found' });
+  writeJsonFileAtomic(OPENINGS_FILE, filtered);
+
+  // forms cascade
+  const forms = readJsonFile(FORMS_FILE, []);
+  const newForms = forms.filter(f => f.openingId !== id);
+  const deletedFormsCount = forms.length - newForms.length;
+  writeJsonFileAtomic(FORMS_FILE, newForms);
+
+  // legacy responses (still in data.json) — preserve existing behavior
   const data = readData();
-  data.openings = data.openings.filter(o => o.id !== id);
-  data.responses = data.responses.filter(r => r.openingId !== id);
+  data.responses = (data.responses || []).filter(r => r.openingId !== id);
   writeData(data);
-  return res.json({ ok: true });
+
+  console.log(`[api DELETE /api/openings/${id}] deleted opening and ${deletedFormsCount} forms`);
+  return res.json({ ok: true, deletedFormsCount });
 });
 
-// Responses (protected)
+/* -----------------------------
+   Forms endpoints (protected)
+   ----------------------------- */
+
+// GET all forms (optionally filter by openingId)
+app.get('/api/forms', authMiddleware, (req, res) => {
+  const forms = readJsonFile(FORMS_FILE, []);
+  const { openingId } = req.query;
+  if (openingId) return res.json(forms.filter(f => f.openingId === openingId));
+  return res.json(forms);
+});
+
+// GET single form
+app.get('/api/forms/:id', authMiddleware, (req, res) => {
+  const forms = readJsonFile(FORMS_FILE, []);
+  const f = forms.find(x => x.id === req.params.id);
+  if (!f) return res.status(404).json({ error: 'form_not_found' });
+  return res.json(f);
+});
+
+// CREATE form
+app.post('/api/forms', authMiddleware, (req, res) => {
+  const { openingId, data } = req.body || {};
+  if (!openingId) return res.status(400).json({ error: 'openingId_required' });
+  const openings = readJsonFile(OPENINGS_FILE, []);
+  if (!openings.find(o => o.id === openingId)) return res.status(400).json({ error: 'invalid_openingId' });
+  const forms = readJsonFile(FORMS_FILE, []);
+  const id = `form_${Date.now()}`;
+  const now = new Date().toISOString();
+  const newForm = { id, openingId, data: data || {}, created_at: now, updated_at: now };
+  forms.push(newForm);
+  writeJsonFileAtomic(FORMS_FILE, forms);
+  console.log('[api POST /api/forms] created', id);
+  return res.status(201).json(newForm);
+});
+
+// UPDATE form
+app.put('/api/forms/:id', authMiddleware, (req, res) => {
+  const id = req.params.id;
+  const forms = readJsonFile(FORMS_FILE, []);
+  const idx = forms.findIndex(f => f.id === id);
+  if (idx === -1) return res.status(404).json({ error: 'form_not_found' });
+  const cur = forms[idx];
+  cur.data = req.body.data !== undefined ? req.body.data : cur.data;
+  cur.updated_at = new Date().toISOString();
+  forms[idx] = cur;
+  writeJsonFileAtomic(FORMS_FILE, forms);
+  console.log('[api PUT /api/forms/:id] updated', id);
+  return res.json(cur);
+});
+
+// DELETE form
+app.delete('/api/forms/:id', authMiddleware, (req, res) => {
+  const id = req.params.id;
+  const forms = readJsonFile(FORMS_FILE, []);
+  const newForms = forms.filter(f => f.id !== id);
+  if (newForms.length === forms.length) return res.status(404).json({ error: 'form_not_found' });
+  writeJsonFileAtomic(FORMS_FILE, newForms);
+  console.log('[api DELETE /api/forms/:id] deleted', id);
+  return res.json({ ok: true, deletedFormId: id });
+});
+
+/* -------------------------
+   Responses (protected) - unchanged
+   ------------------------- */
 app.get('/api/responses', authMiddleware, (req, res) => {
   const data = readData();
   return res.json(data.responses || []);
 });
 
-// -------------------------
-// Public endpoints for openings & schema (no auth)
-// -------------------------
+/* -------------------------
+   Public endpoints for openings & schema (no auth)
+   Now operate on openings.json
+   ------------------------- */
 
-// List public openings (no auth)
+// List public openings
 app.get('/public/openings', (req, res) => {
   try {
-    const data = readData();
-    return res.json(data.openings || []);
+    const openings = readJsonFile(OPENINGS_FILE, []);
+    return res.json(openings || []);
   } catch (err) {
     console.error('GET /public/openings error', err);
     return res.status(500).json({ error: 'server_error' });
   }
 });
 
-// Create opening publicly (no auth) — persists to data.json
+// Create opening publicly (no auth)
 app.post('/public/openings', (req, res) => {
   try {
     const payload = req.body || {};
-    const data = readData();
+    const openings = readJsonFile(OPENINGS_FILE, []);
     const op = {
       id: `op_${Date.now()}`,
       title: payload.title || 'Untitled',
@@ -391,8 +425,8 @@ app.post('/public/openings', (req, res) => {
       schema: payload.schema || null,
       createdAt: new Date().toISOString()
     };
-    data.openings.unshift(op);
-    writeData(data);
+    openings.unshift(op);
+    writeJsonFileAtomic(OPENINGS_FILE, openings);
     console.log('[public POST /public/openings] created', op.id);
     return res.json(op);
   } catch (err) {
@@ -405,8 +439,8 @@ app.post('/public/openings', (req, res) => {
 app.get('/public/openings/:id/schema', (req, res) => {
   try {
     const id = req.params.id;
-    const data = readData();
-    const op = data.openings.find(o => o.id === id);
+    const openings = readJsonFile(OPENINGS_FILE, []);
+    const op = openings.find(o => o.id === id);
     if (!op) return res.status(404).json({ error: 'opening_not_found' });
     return res.json({ schema: op.schema || null });
   } catch (err) {
@@ -415,18 +449,17 @@ app.get('/public/openings/:id/schema', (req, res) => {
   }
 });
 
-// Save opening schema (public endpoint, used by frontend publishing)
-// NOTE: This is public — if you want only authenticated users to change schema, use /api/openings/:id/schema instead.
+// Save opening schema (public)
 app.post('/public/openings/:id/schema', (req, res) => {
   try {
     const id = req.params.id;
     const schema = req.body.schema;
     if (!schema || !Array.isArray(schema)) return res.status(400).json({ error: 'missing_or_invalid_schema' });
-    const data = readData();
-    const idx = data.openings.findIndex(o => o.id === id);
+    const openings = readJsonFile(OPENINGS_FILE, []);
+    const idx = openings.findIndex(o => o.id === id);
     if (idx === -1) return res.status(404).json({ error: 'opening_not_found' });
-    data.openings[idx].schema = schema;
-    writeData(data);
+    openings[idx].schema = schema;
+    writeJsonFileAtomic(OPENINGS_FILE, openings);
     console.log('[public POST /public/openings/:id/schema] saved schema for', id);
     return res.json({ ok: true, schema });
   } catch (err) {
@@ -435,52 +468,61 @@ app.post('/public/openings/:id/schema', (req, res) => {
   }
 });
 
-// Delete opening publicly (no auth) — caution: public destructive action
+// Delete opening publicly (no auth) — cascade delete forms (careful!)
 app.delete('/public/openings/:id', (req, res) => {
   try {
     const id = req.params.id;
+    const openings = readJsonFile(OPENINGS_FILE, []);
+    const before = openings.length;
+    const newOpenings = openings.filter(o => o.id !== id);
+    const removed = before - newOpenings.length;
+    if (removed === 0) return res.status(404).json({ error: 'opening_not_found' });
+    writeJsonFileAtomic(OPENINGS_FILE, newOpenings);
+
+    // cascade forms
+    const forms = readJsonFile(FORMS_FILE, []);
+    const newForms = forms.filter(f => f.openingId !== id);
+    const deletedFormsCount = forms.length - newForms.length;
+    writeJsonFileAtomic(FORMS_FILE, newForms);
+
+    // legacy responses cleanup (still preserved behavior)
     const data = readData();
-    const before = data.openings.length;
-    data.openings = data.openings.filter(o => o.id !== id);
-    data.responses = data.responses.filter(r => r.openingId !== id);
+    data.responses = (data.responses || []).filter(r => r.openingId !== id);
     writeData(data);
-    console.log(`[public DELETE /public/openings/${id}] removed. before=${before} after=${data.openings.length}`);
-    return res.json({ ok: true });
+
+    console.log(`[public DELETE /public/openings/${id}] removed opening and ${deletedFormsCount} forms`);
+    return res.json({ ok: true, deletedFormsCount });
   } catch (err) {
     console.error('DELETE /public/openings/:id error', err);
     return res.status(500).json({ error: 'server_error' });
   }
 });
 
-// -------------------------
-// Public apply endpoint -> upload resume to Drive, append to Sheet, persist locally
-// -------------------------
+/* -------------------------
+   Public apply endpoint -> upload resume to Drive, append to Sheet, persist locally (unchanged)
+   ------------------------- */
 app.post('/api/apply', upload.single('resume'), async (req, res) => {
   try {
     const openingId = req.query.opening || req.body.opening;
     const src = req.query.src || req.body.src || 'unknown';
     if (!openingId) return res.status(400).json({ error: 'missing opening id' });
 
-    // find opening title if available
     const data = readData();
-    const opening = data.openings.find(o => o.id === openingId);
+    const opening = (readJsonFile(OPENINGS_FILE, []) || []).find(o => o.id === openingId) || data.openings.find(o => o.id === openingId);
     const openingTitle = opening ? opening.title : null;
 
-    // Resume upload
+    // Resume upload to Drive (or fallback to local)
     let resumeLink = null;
     if (req.file && req.file.buffer) {
       const filename = `${Date.now()}_${(req.file.originalname || 'resume')}`;
       try {
-        // Attempt Drive upload first
         resumeLink = await uploadToDrive(req.file.buffer, filename, req.file.mimetype || 'application/octet-stream');
         console.log('Drive upload success, resumeLink=', resumeLink);
       } catch (err) {
-        // Drive failed — log and fallback to saving locally and serving via /uploads
         console.error('Drive upload failed:', err && (err.stack || err.message));
         try {
           const localPath = path.join(UPLOADS_DIR, filename);
           fs.writeFileSync(localPath, req.file.buffer);
-          // construct absolute URL based on incoming request host
           const host = req.get('host');
           const protocol = req.protocol;
           resumeLink = `${protocol}://${host}/uploads/${encodeURIComponent(filename)}`;
@@ -493,11 +535,9 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
       console.log('No resume file in submission (req.file empty)');
     }
 
-    // collect non-file fields
     const answers = {};
     Object.keys(req.body || {}).forEach(k => { answers[k] = req.body[k]; });
 
-    // persist locally
     const resp = {
       id: `resp_${Date.now()}`,
       openingId,
