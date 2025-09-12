@@ -107,19 +107,15 @@ async function getSheetsService() {
   return google.sheets({ version: 'v4', auth: client });
 }
 
-// Utility: sanitize sheet title (max 100 chars, remove problematic chars)
+// Utility: sanitize sheet title (max length and remove forbidden characters)
 function sanitizeSheetTitle(title) {
   if (!title) title = 'sheet';
-  // remove slashes and weird chars, trim to 90 chars
   return String(title).replace(/[\\\/\?\*\[\]\:]/g, '_').slice(0, 90);
 }
 
 /**
- * ensureSheetTab
- * - Checks whether a sheet/tab with the provided title exists in the spreadsheet.
- * - If not, creates it.
- * - Ensures first row (headers) matches provided headers array: updates header row if needed.
- * Returns: { sheetTitle, ok: true }
+ * ensureSheetTab(spreadsheetId, sheetTitle, headers)
+ * - ensures the named sheet/tab exists and its first row matches headers
  */
 async function ensureSheetTab(spreadsheetId, sheetTitle, headers = []) {
   if (!spreadsheetId) throw new Error('spreadsheetId required');
@@ -127,33 +123,26 @@ async function ensureSheetTab(spreadsheetId, sheetTitle, headers = []) {
 
   const cleanTitle = sanitizeSheetTitle(sheetTitle);
 
-  // Get current spreadsheet metadata
+  // get spreadsheet metadata
   const meta = await sheets.spreadsheets.get({ spreadsheetId, includeGridData: false });
   const existingSheets = (meta.data.sheets || []).map(s => s.properties?.title);
 
-  // Add sheet if missing
+  // add sheet if missing
   if (!existingSheets.includes(cleanTitle)) {
     console.log('Adding new sheet/tab:', cleanTitle);
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId,
       requestBody: {
-        requests: [
-          { addSheet: { properties: { title: cleanTitle } } }
-        ]
+        requests: [{ addSheet: { properties: { title: cleanTitle } } }]
       }
     });
   }
 
-  // Prepare header row and update if needed
+  // update header row if provided
   if (headers && headers.length) {
-    // read current header row (A1:Z1)
     try {
-      const read = await sheets.spreadsheets.values.get({
-        spreadsheetId,
-        range: `${cleanTitle}!1:1`
-      });
+      const read = await sheets.spreadsheets.values.get({ spreadsheetId, range: `${cleanTitle}!1:1` });
       const current = (read.data.values && read.data.values[0]) || [];
-      // compare current headers and desired headers
       let needUpdate = false;
       if (current.length !== headers.length) needUpdate = true;
       else {
@@ -171,8 +160,7 @@ async function ensureSheetTab(spreadsheetId, sheetTitle, headers = []) {
         });
       }
     } catch (err) {
-      // if reading failed (e.g., empty sheet), write headers
-      console.warn('Header read failed or missing; writing headers for', cleanTitle, err && err.message);
+      console.warn('Header read failed; writing headers for', cleanTitle, err && err.message);
       await sheets.spreadsheets.values.update({
         spreadsheetId,
         range: `${cleanTitle}!A1`,
@@ -186,12 +174,11 @@ async function ensureSheetTab(spreadsheetId, sheetTitle, headers = []) {
 }
 
 /**
- * appendRowToSheet
- * - spreadsheetId
- * - sheetTitle
- * - valuesArray (array aligned with headers)
+ * appendRowToSheet(spreadsheetId, sheetTitle, valuesArray)
+ * - append a single row into sheetTitle
  */
 async function appendRowToSheet(spreadsheetId, sheetTitle, valuesArray) {
+  if (!spreadsheetId) throw new Error('spreadsheetId required');
   const sheets = await getSheetsService();
   const range = `${sanitizeSheetTitle(sheetTitle)}!A:Z`;
   const res = await sheets.spreadsheets.values.append({
@@ -204,7 +191,24 @@ async function appendRowToSheet(spreadsheetId, sheetTitle, valuesArray) {
   return res.status === 200 || res.status === 201;
 }
 
-// Drive upload (same logic as before) — uses stream.PassThrough for media
+/**
+ * appendToSheet(spreadsheetId, valuesArray)
+ * - convenience: append to default sheet (Sheet1)
+ */
+async function appendToSheet(spreadsheetId, valuesArray) {
+  if (!spreadsheetId) throw new Error('spreadsheetId required');
+  const sheets = await getSheetsService();
+  const res = await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: 'Sheet1!A:Z',
+    valueInputOption: 'RAW',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: [valuesArray] }
+  });
+  return res.status === 200 || res.status === 201;
+}
+
+// Drive upload helper (stream)
 async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet-stream') {
   if (!DRIVE_FOLDER_ID) throw new Error('DRIVE_FOLDER_ID not set in env');
   const drive = await getDriveService();
@@ -232,7 +236,7 @@ async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet
 
   console.log('Drive file created id=', fileId);
 
-  // attempt to make it readable by link (may be blocked by org policy)
+  // attempt to make it link-viewable
   try {
     await drive.permissions.create({
       fileId,
@@ -241,12 +245,12 @@ async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet
     });
     console.log('Set permission: anyone reader on fileId=', fileId);
   } catch (err) {
-    console.warn('Failed to set "anyone" permission (may be org policy). Continuing. err=', err && err.message);
+    console.warn('Failed to set file permission (may be org policy). Continuing. err=', err && err.message);
   }
 
-  // fetch webViewLink
+  // fetch webViewLink (support shared drives)
   try {
-    const meta = await drive.files.get({ fileId, fields: 'id, webViewLink, webContentLink' });
+    const meta = await drive.files.get({ fileId, fields: 'id, webViewLink, webContentLink', supportsAllDrives: true });
     const link = meta.data.webViewLink || meta.data.webContentLink || `https://drive.google.com/file/d/${fileId}/view`;
     console.log('Drive link:', link);
     return link;
@@ -319,7 +323,7 @@ app.get('/auth/google/callback', (req, res, next) => {
   })(req, res, next);
 });
 
-// --- API endpoints (openings, responses) ---
+// --- API endpoints ---
 
 app.get('/api/me', authMiddleware, (req, res) => {
   const data = readData();
@@ -343,7 +347,7 @@ app.post('/api/openings', authMiddleware, (req, res) => {
     department: payload.department || '',
     preferredSources: Array.isArray(payload.preferredSources) ? payload.preferredSources : (payload.preferredSources ? payload.preferredSources.split(',') : []),
     durationMins: payload.durationMins || 30,
-    schema: payload.schema || null, // optional schema: [{id,label},...]
+    schema: payload.schema || null,
     createdAt: new Date().toISOString()
   };
   data.openings.unshift(op);
@@ -351,7 +355,7 @@ app.post('/api/openings', authMiddleware, (req, res) => {
   return res.json(op);
 });
 
-// update opening schema (protected): body.schema = [{id,label},...]
+// update opening schema
 app.post('/api/openings/:id/schema', authMiddleware, (req, res) => {
   const id = req.params.id;
   const incoming = req.body.schema;
@@ -391,7 +395,7 @@ app.get('/api/responses', authMiddleware, (req, res) => {
   return res.json(data.responses || []);
 });
 
-// --- Public apply endpoint -> upload resume to Drive, append to opening sheet (subsheet) ---
+// Public apply endpoint -> upload resume to Drive, append to opening sheet (subsheet)
 app.post('/api/apply', upload.single('resume'), async (req, res) => {
   try {
     const openingId = req.query.opening || req.body.opening;
@@ -401,23 +405,17 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     const data = readData();
     const opening = data.openings.find(o => o.id === openingId);
     const openingTitle = opening ? opening.title : null;
-    const sheetTabName = opening ? (`${opening.id}`) : `opening_${openingId}`; // sheet tab = opening id (unique)
+    const sheetTabName = opening ? (`${opening.id}`) : `opening_${openingId}`;
 
-    // If client sent schema in this request, accept & save it.
-    // _schema may be JSON string or object: [{id,label}, ...]
+    // accept _schema inline
     let providedSchema = null;
     if (req.body && req.body._schema) {
       try {
         providedSchema = typeof req.body._schema === 'string' ? JSON.parse(req.body._schema) : req.body._schema;
-        if (Array.isArray(providedSchema)) {
-          // Save to opening record for future mapping (only if opening exists)
-          if (opening) {
-            opening.schema = providedSchema;
-            writeData(data);
-            console.log('Saved schema for opening', openingId);
-          }
-        } else {
-          providedSchema = null;
+        if (Array.isArray(providedSchema) && opening) {
+          opening.schema = providedSchema;
+          writeData(data);
+          console.log('Saved schema for opening', openingId);
         }
       } catch (err) {
         console.warn('Invalid _schema provided, ignoring', err && err.message);
@@ -425,10 +423,9 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
       }
     }
 
-    // Build active schema: prefer stored opening.schema, else providedSchema, else null
     const activeSchema = (opening && opening.schema) ? opening.schema : providedSchema;
 
-    // Handle resume upload (Drive attempt + fallback to local)
+    // Resume upload
     let resumeLink = null;
     if (req.file && req.file.buffer) {
       const filename = `${Date.now()}_${(req.file.originalname || 'resume')}`;
@@ -453,15 +450,14 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
       console.log('No resume file present in submission');
     }
 
-    // collect answers: req.body contains non-file fields merged by multer
-    // Note: keys are expected to be question ids (as frontend sets name={q.id})
+    // collect answers (skip _schema)
     const answers = {};
     Object.keys(req.body || {}).forEach(k => {
-      if (k === '_schema') return; // skip
+      if (k === '_schema') return;
       answers[k] = req.body[k];
     });
 
-    // persist response locally
+    // persist locally
     const resp = {
       id: `resp_${Date.now()}`,
       openingId,
@@ -474,31 +470,23 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     data.responses.unshift(resp);
     writeData(data);
 
-    // If we have a sheet id and a schema, ensure sheet tab & headers and append mapped values
+    // If activeSchema present, create/update tab headers and append mapped columns
     if (SHEET_ID && activeSchema && Array.isArray(activeSchema) && activeSchema.length) {
       try {
-        // activeSchema is array of {id,label}. Construct headers in same order
         const headers = activeSchema.map(s => s.label || s.id);
-
-        // Ensure tab created & header row set
         await ensureSheetTab(SHEET_ID, sheetTabName, headers);
 
-        // build values array aligned to headers
         const valuesArray = activeSchema.map(s => {
-          // answers keys may be strings; prefer answers[s.id]
           const v = answers[s.id];
-          // If it's an array (checkboxes), join
           if (Array.isArray(v)) return v.join(', ');
           return (v === undefined || v === null) ? '' : String(v);
         });
 
-        // Prepend timestamp and maybe other meta columns? (User asked columns per question; we'll add timestamp as first column)
-        // Option A: If you want timestamp as first column, add header and shift values. But since user asked columns = question labels, we only write question columns.
         await appendRowToSheet(SHEET_ID, sheetTabName, valuesArray);
         console.log('Appended mapped row to sheet tab', sheetTabName);
       } catch (err) {
         console.error('Failed to append mapped row to sheet/subsheet:', err && (err.stack || err.message));
-        // fallback: append a generic row to a top-level sheet (Sheet1)
+        // fallback generic append
         try {
           const genericRow = [new Date().toISOString(), openingId, openingTitle || '', src, resumeLink || '', JSON.stringify(answers)];
           if (SHEET_ID) {
@@ -510,7 +498,7 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
         }
       }
     } else {
-      // No schema: append generic row to sheet if possible
+      // no schema: generic append
       if (SHEET_ID) {
         try {
           const genericRow = [new Date().toISOString(), openingId, openingTitle || '', src, resumeLink || '', JSON.stringify(answers)];
