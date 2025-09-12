@@ -26,6 +26,8 @@ const JWT_SECRET = process.env.JWT_SECRET || 'please-change-this-secret';
 const DATA_DIR = path.resolve(__dirname, 'server_data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const DATA_FILE = path.join(DATA_DIR, 'data.json');
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 function readData() {
   try {
@@ -44,6 +46,9 @@ function readData() {
 function writeData(obj) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(obj, null, 2));
 }
+
+// serve fallback uploads if Drive fails
+app.use('/uploads', express.static(UPLOADS_DIR));
 
 // --- Google / Drive / Sheets config
 const DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
@@ -116,48 +121,62 @@ async function getSheetsService() {
   return google.sheets({ version: 'v4', auth: client });
 }
 
-// Improved Drive upload: returns shareable link (webViewLink)
+/**
+ * uploadToDrive
+ * - fileBuffer: Buffer
+ * - filename: string
+ * - mimeType: string
+ *
+ * Returns: webViewLink string on success.
+ *
+ * Throws on fatal errors (caller can catch and fallback to local save).
+ */
 async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet-stream') {
   if (!DRIVE_FOLDER_ID) throw new Error('DRIVE_FOLDER_ID not set in env');
   const drive = await getDriveService();
 
-  // buffer -> stream
+  // Convert buffer to readable stream for googleapis multipart handler.
   const bufferStream = new stream.PassThrough();
   bufferStream.end(Buffer.isBuffer(fileBuffer) ? fileBuffer : Buffer.from(fileBuffer));
 
   console.log(`Uploading to Drive: name=${filename} size=${(fileBuffer ? fileBuffer.length : 0)} mime=${mimeType} folder=${DRIVE_FOLDER_ID}`);
 
+  // Use the stream as media.body
   const created = await drive.files.create({
     requestBody: {
       name: filename,
-      parents: [DRIVE_FOLDER_ID]
+      parents: [DRIVE_FOLDER_ID],
     },
     media: {
       mimeType,
-      body: Buffer.from(fileBuffer),
+      body: bufferStream
     },
     supportsAllDrives: true,
     fields: 'id, webViewLink, webContentLink'
   });
 
   const fileId = created.data && created.data.id;
+  if (!fileId) throw new Error('Drive returned no file id');
+
   console.log('Drive file created id=', fileId);
 
-  // set "anyone with link can view" permission when possible
+  // Make file viewable via link (anyoneWithLink). This may fail in some org policies.
   try {
     await drive.permissions.create({
       fileId,
       requestBody: {
         role: 'reader',
         type: 'anyone'
-      }
+      },
+      supportsAllDrives: true
     });
     console.log('Set permission: anyone reader on fileId=', fileId);
   } catch (err) {
-    console.warn('Failed to set file permission (may be fine if folder is already shared):', err && err.message);
+    // Not fatal — many orgs block "anyone" sharing; we'll continue and return webViewLink if available.
+    console.warn('Failed to set "anyone" permission (may be org policy). Continuing. err=', err && err.message);
   }
 
-  // retrieve webViewLink
+  // get webViewLink
   try {
     const meta = await drive.files.get({ fileId, fields: 'id, webViewLink, webContentLink' });
     const link = meta.data.webViewLink || meta.data.webContentLink || `https://drive.google.com/file/d/${fileId}/view`;
@@ -338,9 +357,23 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     if (req.file && req.file.buffer) {
       const filename = `${Date.now()}_${(req.file.originalname || 'resume')}`;
       try {
+        // Attempt Drive upload first
         resumeLink = await uploadToDrive(req.file.buffer, filename, req.file.mimetype || 'application/octet-stream');
+        console.log('Drive upload success, resumeLink=', resumeLink);
       } catch (err) {
-        console.error('Drive upload failed', err && (err.stack || err.message));
+        // Drive failed — log and fallback to saving locally and serving via /uploads
+        console.error('Drive upload failed:', err && (err.stack || err.message));
+        try {
+          const localPath = path.join(UPLOADS_DIR, filename);
+          fs.writeFileSync(localPath, req.file.buffer);
+          // construct absolute URL based on incoming request host
+          const host = req.get('host');
+          const protocol = req.protocol;
+          resumeLink = `${protocol}://${host}/uploads/${encodeURIComponent(filename)}`;
+          console.log('Saved fallback file locally at', localPath, '->', resumeLink);
+        } catch (fsErr) {
+          console.error('Failed to save fallback file locally', fsErr && (fsErr.stack || fsErr.message));
+        }
       }
     } else {
       console.log('No resume file in submission (req.file empty)');
@@ -363,7 +396,7 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     data.responses.unshift(resp);
     writeData(data);
 
-    // Append to sheet
+    // Append to sheet (best-effort)
     try {
       const row = [ new Date().toISOString(), openingId, openingTitle || '', src, resumeLink || '', JSON.stringify(answers) ];
       if (SHEET_ID) {
