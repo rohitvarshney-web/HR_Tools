@@ -1,7 +1,7 @@
 // server.js
 // Backend: OAuth (Google), file upload -> Drive, append -> Google Sheets,
 // simple JSON file persistence for openings/responses/users, JWT auth.
-// Added public endpoints to persist openings without authentication.
+// Added public endpoints to persist openings & schemas without authentication.
 
 require('dotenv').config();
 const express = require('express');
@@ -130,6 +130,86 @@ async function getSheetsService() {
   return google.sheets({ version: 'v4', auth: client });
 }
 
+// sanitize sheet title
+function sanitizeSheetTitle(title) {
+  if (!title) title = 'sheet';
+  return String(title).replace(/[\\\/\?\*\[\]\:]/g, '_').slice(0, 90);
+}
+
+/**
+ * ensureSheetTabWithHeaders
+ * Creates a sheet tab if missing, writes a header row (metadata + question labels),
+ * and returns the headers array.
+ *
+ * questionSchema: array of { id, label, type, options? }
+ */
+async function ensureSheetTabWithHeaders(spreadsheetId, sheetTitle, questionSchema = []) {
+  if (!spreadsheetId) throw new Error('spreadsheetId required');
+  const sheets = await getSheetsService();
+  const cleanTitle = sanitizeSheetTitle(sheetTitle);
+
+  // get spreadsheet metadata
+  const meta = await sheets.spreadsheets.get({ spreadsheetId, includeGridData: false });
+  const existingSheets = (meta.data.sheets || []).map(s => s.properties?.title);
+
+  // add sheet if missing
+  if (!existingSheets.includes(cleanTitle)) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [{ addSheet: { properties: { title: cleanTitle } } }]
+      }
+    });
+    console.log('Added sheet tab', cleanTitle);
+  }
+
+  // build headers: metadata first, then questions labels
+  const metaHeaders = ['Timestamp', 'OpeningId', 'OpeningTitle', 'Source', 'ResumeLink'];
+  const questionHeaders = (Array.isArray(questionSchema) ? questionSchema.map(q => q.label || q.id) : []);
+  const headers = [...metaHeaders, ...questionHeaders];
+
+  // write header row at A1 (replaces existing header)
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${cleanTitle}!A1`,
+    valueInputOption: 'RAW',
+    requestBody: { values: [headers] }
+  });
+
+  return headers;
+}
+
+// Append row to a specific sheet tab (A:Z) — inserted starting at column A
+async function appendRowToSheetTab(spreadsheetId, sheetTitle, valuesArray) {
+  if (!spreadsheetId) throw new Error('spreadsheetId required');
+  const sheets = await getSheetsService();
+  const range = `${sanitizeSheetTitle(sheetTitle)}!A:Z`;
+  const res = await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range,
+    valueInputOption: 'RAW',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: [valuesArray] }
+  });
+  return res.status === 200 || res.status === 201;
+}
+
+// Append row to default Sheet1 (A:Z) — fallback generic
+async function appendToSheet(sheetId, valuesArray) {
+  if (!sheetId) throw new Error('GOOGLE_SHEET_ID not set in env');
+  const sheets = await getSheetsService();
+  const res = await sheets.spreadsheets.values.append({
+    spreadsheetId: sheetId,
+    range: 'Sheet1!A:Z', // anchor to A-Z so appended rows begin at column A
+    valueInputOption: 'RAW',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: {
+      values: [valuesArray]
+    }
+  });
+  return res.status === 200 || res.status === 201;
+}
+
 /**
  * uploadToDrive
  * - fileBuffer: Buffer
@@ -195,22 +275,6 @@ async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet
     console.warn('drive.files.get failed for fileId=', fileId, err && err.message);
     return `https://drive.google.com/file/d/${fileId}/view`;
   }
-}
-
-// Append row to sheets (anchor at A1 so appended rows start at column A)
-async function appendToSheet(sheetId, valuesArray) {
-  if (!sheetId) throw new Error('GOOGLE_SHEET_ID not set in env');
-  const sheets = await getSheetsService();
-  const res = await sheets.spreadsheets.values.append({
-    spreadsheetId: sheetId,
-    range: 'Sheet1!A1',
-    valueInputOption: 'RAW',
-    insertDataOption: 'INSERT_ROWS',
-    requestBody: {
-      values: [valuesArray]
-    }
-  });
-  return res.status === 200 || res.status === 201;
 }
 
 // Multer (memory)
@@ -314,6 +378,7 @@ app.post('/api/openings', authMiddleware, (req, res) => {
     department: payload.department || '',
     preferredSources: Array.isArray(payload.preferredSources) ? payload.preferredSources : (payload.preferredSources ? payload.preferredSources.split(',') : []),
     durationMins: payload.durationMins || 30,
+    schema: payload.schema || null, // optional schema saved with opening
     createdAt: new Date().toISOString()
   };
   data.openings.unshift(op);
@@ -327,7 +392,7 @@ app.put('/api/openings/:id', authMiddleware, (req, res) => {
   const idx = data.openings.findIndex(o => o.id === id);
   if (idx === -1) return res.status(404).json({ error: 'opening_not_found' });
   const cur = data.openings[idx];
-  const fields = ['title','location','department','preferredSources','durationMins'];
+  const fields = ['title','location','department','preferredSources','durationMins','schema'];
   fields.forEach(f => { if (req.body[f] !== undefined) cur[f] = req.body[f]; });
   data.openings[idx] = cur;
   writeData(data);
@@ -376,6 +441,7 @@ app.post('/public/openings', (req, res) => {
       department: payload.department || '',
       preferredSources: Array.isArray(payload.preferredSources) ? payload.preferredSources : (payload.preferredSources ? payload.preferredSources.split(',') : []),
       durationMins: payload.durationMins || 30,
+      schema: payload.schema || null,
       createdAt: new Date().toISOString()
     };
     data.openings.unshift(op);
@@ -384,6 +450,41 @@ app.post('/public/openings', (req, res) => {
     return res.json(op);
   } catch (err) {
     console.error('POST /public/openings error', err);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// Save/update schema for an opening (public)
+app.post('/public/openings/:id/schema', (req, res) => {
+  try {
+    const id = req.params.id;
+    const incoming = req.body.schema;
+    if (!incoming || !Array.isArray(incoming)) {
+      return res.status(400).json({ error: 'schema must be an array' });
+    }
+    const data = readData();
+    const idx = data.openings.findIndex(o => o.id === id);
+    if (idx === -1) return res.status(404).json({ error: 'opening_not_found' });
+    data.openings[idx].schema = incoming;
+    writeData(data);
+    console.log(`[public POST /public/openings/${id}/schema] saved schema (questions: ${incoming.length})`);
+    return res.json({ ok: true, schema: incoming });
+  } catch (err) {
+    console.error('POST /public/openings/:id/schema error', err);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// Fetch schema for an opening (public)
+app.get('/public/openings/:id/schema', (req, res) => {
+  try {
+    const id = req.params.id;
+    const data = readData();
+    const op = data.openings.find(o => o.id === id);
+    if (!op) return res.status(404).json({ error: 'opening_not_found' });
+    return res.json({ schema: op.schema || [] });
+  } catch (err) {
+    console.error('GET /public/openings/:id/schema error', err);
     return res.status(500).json({ error: 'server_error' });
   }
 });
@@ -407,7 +508,7 @@ app.delete('/public/openings/:id', (req, res) => {
 
 // -------------------------
 // Public apply endpoint -> upload resume to Drive, append to Sheet, persist locally
-// (unchanged from your working flow)
+// (enhanced: if opening has schema, create/open that tab and insert mapped values)
 // -------------------------
 app.post('/api/apply', upload.single('resume'), async (req, res) => {
   try {
@@ -415,10 +516,12 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     const src = req.query.src || req.body.src || 'unknown';
     if (!openingId) return res.status(400).json({ error: 'missing opening id' });
 
-    // find opening title if available
+    // find opening and its schema if present
     const data = readData();
     const opening = data.openings.find(o => o.id === openingId);
-    const openingTitle = opening ? opening.title : null;
+    const openingTitle = opening ? opening.title : '';
+    const activeSchema = opening && Array.isArray(opening.schema) ? opening.schema : null;
+    const sheetTabName = opening ? `${opening.id}` : `opening_${openingId}`;
 
     // Resume upload
     let resumeLink = null;
@@ -447,9 +550,9 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
       console.log('No resume file in submission (req.file empty)');
     }
 
-    // collect non-file fields
+    // collect non-file fields (skip any _schema payload)
     const answers = {};
-    Object.keys(req.body || {}).forEach(k => { answers[k] = req.body[k]; });
+    Object.keys(req.body || {}).forEach(k => { if (k === '_schema') return; answers[k] = req.body[k]; });
 
     // persist locally
     const resp = {
@@ -464,17 +567,46 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     data.responses.unshift(resp);
     writeData(data);
 
-    // Append to sheet (best-effort)
-    try {
-      const row = [ new Date().toISOString(), openingId, openingTitle || '', src, resumeLink || '', JSON.stringify(answers) ];
-      if (SHEET_ID) {
-        await appendToSheet(SHEET_ID, row);
-        console.log('Appended row to sheet', SHEET_ID);
-      } else {
-        console.warn('SHEET_ID not set; skipping appendToSheet');
+    // Append to sheet
+    if (SHEET_ID && activeSchema && Array.isArray(activeSchema) && activeSchema.length) {
+      try {
+        // Ensure sheet tab exists and header row is set
+        const headers = await ensureSheetTabWithHeaders(SHEET_ID, sheetTabName, activeSchema);
+
+        // Build values matching header order:
+        const metaValues = [ new Date().toISOString(), openingId, openingTitle, src, resumeLink || '' ];
+        const questionValues = activeSchema.map(s => {
+          // try by id first, then by label
+          const raw = answers[s.id] !== undefined ? answers[s.id] : (answers[s.label] !== undefined ? answers[s.label] : '');
+          if (Array.isArray(raw)) return raw.join(', ');
+          return (raw === undefined || raw === null) ? '' : String(raw);
+        });
+        const valuesArray = [...metaValues, ...questionValues];
+
+        await appendRowToSheetTab(SHEET_ID, sheetTabName, valuesArray);
+        console.log('Appended mapped row to sheet tab', sheetTabName);
+      } catch (err) {
+        console.error('Failed to append mapped row to sheet/subsheet:', err && (err.stack || err.message));
+        // fallback: generic append to Sheet1
+        try {
+          const genericRow = [new Date().toISOString(), openingId, openingTitle || '', src, resumeLink || '', JSON.stringify(answers)];
+          await appendToSheet(SHEET_ID, genericRow);
+          console.log('Appended fallback generic row to Sheet1');
+        } catch (err2) {
+          console.error('Fallback appendToSheet failed', err2 && err2.message);
+        }
       }
-    } catch (err) {
-      console.error('appendToSheet error', err && (err.stack || err.message));
+    } else if (SHEET_ID) {
+      // No schema: fallback generic append
+      try {
+        const genericRow = [ new Date().toISOString(), openingId, openingTitle || '', src, resumeLink || '', JSON.stringify(answers) ];
+        await appendToSheet(SHEET_ID, genericRow);
+        console.log('Appended generic row to Sheet1 (no schema)');
+      } catch (err) {
+        console.error('appendToSheet (generic) failed', err && err.message);
+      }
+    } else {
+      console.warn('SHEET_ID not set; skipping sheet append');
     }
 
     return res.json({ ok: true, resumeLink });
