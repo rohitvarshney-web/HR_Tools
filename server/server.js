@@ -241,7 +241,9 @@ async function connectMongo() {
   }
   if (db) return db;
   try {
-    mongoClient = new MongoClient(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true });
+    const client = new MongoClient(MONGO_URI, {
+  serverSelectionTimeoutMS: 15000, // keep this if you want
+});
     await mongoClient.connect();
     db = mongoClient.db(MONGO_DB_NAME);
     console.log('✅ Connected to MongoDB:', db.databaseName);
