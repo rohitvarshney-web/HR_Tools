@@ -227,6 +227,114 @@ function authMiddleware(req, res, next) {
   }
 }
 
+//
+// === USER MANAGEMENT: signup / login / admin user endpoints ===
+//
+
+const bcrypt = require('bcryptjs');
+
+// helper: minimal email validation
+function isValidEmail(e) {
+  return typeof e === 'string' && /\S+@\S+\.\S+/.test(e);
+}
+
+// Create a new user (signup)
+app.post('/api/signup', async (req, res) => {
+  try {
+    const { email, password, name } = req.body || {};
+    if (!email || !password) return res.status(400).json({ error: 'email_and_password_required' });
+    if (!isValidEmail(email)) return res.status(400).json({ error: 'invalid_email' });
+    const data = readData();
+    const exists = data.users.find(u => u.email.toLowerCase() === email.toLowerCase());
+    if (exists) return res.status(409).json({ error: 'user_exists' });
+
+    const hashed = await bcrypt.hash(password, 10);
+    const user = {
+      id: `u_${Date.now()}`,
+      email: email.toLowerCase(),
+      passwordHash: hashed,
+      name: name || '',
+      role: 'recruiter', // default role, can be changed by admin
+      createdAt: new Date().toISOString()
+    };
+    data.users.push(user);
+    writeData(data);
+
+    // return token (do not send passwordHash)
+    const token = signUserToken(user);
+    return res.json({ ok: true, token, user: { id: user.id, email: user.email, name: user.name, role: user.role } });
+  } catch (err) {
+    console.error('/api/signup err', err && (err.stack || err.message));
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// Login with email/password
+app.post('/api/login', async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) return res.status(400).json({ error: 'email_and_password_required' });
+
+    const data = readData();
+    const user = data.users.find(u => u.email.toLowerCase() === (email || '').toLowerCase());
+    if (!user || !user.passwordHash) return res.status(401).json({ error: 'invalid_credentials' });
+
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    if (!ok) return res.status(401).json({ error: 'invalid_credentials' });
+
+    const token = signUserToken(user);
+    return res.json({ ok: true, token, user: { id: user.id, email: user.email, name: user.name, role: user.role } });
+  } catch (err) {
+    console.error('/api/login err', err && (err.stack || err.message));
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// requireRole middleware
+function requireRole(role) {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: 'not_authenticated' });
+    if (!req.user.role) return res.status(403).json({ error: 'role_missing' });
+    // allow if role matches or user is admin
+    if (req.user.role === role || req.user.role === 'admin') return next();
+    return res.status(403).json({ error: 'forbidden' });
+  };
+}
+
+// Admin: list users (protected)
+app.get('/api/users', authMiddleware, requireRole('admin'), (req, res) => {
+  const data = readData();
+  // return users without passwordHash
+  const safe = (data.users || []).map(u => ({ id: u.id, email: u.email, name: u.name, role: u.role, createdAt: u.createdAt }));
+  return res.json(safe);
+});
+
+// Admin: update user (role/name) - no password reset here
+app.put('/api/users/:id', authMiddleware, requireRole('admin'), (req, res) => {
+  const id = req.params.id;
+  const { role, name } = req.body || {};
+  const data = readData();
+  const idx = data.users.findIndex(u => u.id === id);
+  if (idx === -1) return res.status(404).json({ error: 'user_not_found' });
+  if (role) data.users[idx].role = role;
+  if (name !== undefined) data.users[idx].name = name;
+  writeData(data);
+  const u = data.users[idx];
+  return res.json({ id: u.id, email: u.email, name: u.name, role: u.role, createdAt: u.createdAt });
+});
+
+// Admin: delete user
+app.delete('/api/users/:id', authMiddleware, requireRole('admin'), (req, res) => {
+  const id = req.params.id;
+  const data = readData();
+  const exists = data.users.find(u => u.id === id);
+  if (!exists) return res.status(404).json({ error: 'user_not_found' });
+  data.users = data.users.filter(u => u.id !== id);
+  writeData(data);
+  return res.json({ ok: true });
+});
+
+
 // Passport Google OAuth
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
