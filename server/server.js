@@ -245,6 +245,7 @@ if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET
       console.log('OAuth sign-in attempt email=', email, 'id=', profile.id);
 
       // find allowlisted user by email (case-insensitive)
+      console.log('Loaded allowlist users:', (data.users || []).map(u => u.email));
       const user = (data.users || []).find(u => (u.email || '').toLowerCase() === normalized);
 
       if (!user) {
