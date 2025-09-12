@@ -61,7 +61,7 @@ function LoginPage({ backendUrl }) {
           <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none"><path d="M21 12.3c0-.8-.1-1.5-.3-2.2H12v4.2h5.5c-.2 1.2-.9 2.3-1.9 3.1v2.6h3.1C20.1 18.3 21 15.5 21 12.3z" fill="#4285F4"/><path d="M12 22c2.7 0 4.9-.9 6.6-2.4l-3.1-2.6c-.9.6-2.1 1-3.5 1-2.7 0-4.9-1.8-5.7-4.3H3.9v2.7C5.7 19.9 8.6 22 12 22z" fill="#34A853"/><path d="M6.3 13.7A6.7 6.7 0 016 12c0-.6.1-1.1.3-1.7V7.6H3.9A10 10 0 002 12c0 1.6.4 3 1.1 4.4l2.2-2.7z" fill="#FBBC05"/><path d="M12 6.5c1.5 0 2.8.5 3.8 1.5l2.9-2.9C16.9 3.2 14.7 2 12 2 8.6 2 5.7 4.1 3.9 7.6l2.4 2.7C7 8.3 9.3 6.5 12 6.5z" fill="#EA4335"/></svg>
           Sign in with Google
         </button>
-        <div className="mt-4 text-xs text-gray-500">Reach out to rohit.varshney@stampmyvisa.com, if you are unable to sig-in</div>
+        <div className="mt-4 text-xs text-gray-500">Reach out to rohit.varshney@stampmyvisa.com, if you are unable to sign-in</div>
       </div>
     </div>
   );
