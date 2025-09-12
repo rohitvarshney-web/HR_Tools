@@ -39,9 +39,9 @@ const QUESTION_TYPES = [
 ];
 
 export default function App() {
-  // Prefer the environment variable, otherwise use the current origin (deployed host).
-// This avoids accidentally calling localhost after deploy.
-const API = process.env.REACT_APP_API_URL || window.location.origin;
+// TEMP: force backend URL for debugging — remove later and use REACT_APP_API_URL env var
+const API = process.env.REACT_APP_API_URL || 'https://hr-tools-backend.onrender.com';
+console.log('Using API endpoint:', API);
 
   const [openings, setOpenings] = useState([]);
   const [activeTab, setActiveTab] = useState("overview");
