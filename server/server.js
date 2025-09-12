@@ -11,6 +11,7 @@ const path = require('path');
 const { google } = require('googleapis');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
+const stream = require('stream'); // used for Drive uploads
 
 const app = express();
 app.use(cors());
@@ -45,75 +46,137 @@ function writeData(obj) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(obj, null, 2));
 }
 
-// --- Google auth using service account
-const SERVICE_ACCOUNT_FILE = process.env.GOOGLE_SERVICE_ACCOUNT_FILE;
-if (!SERVICE_ACCOUNT_FILE) {
-  console.warn('WARNING: GOOGLE_SERVICE_ACCOUNT_FILE not set - Drive/Sheets will fail until configured');
-}
+// --- Google config (folder / sheet IDs)
 const DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
 const SHEET_ID = process.env.GOOGLE_SHEET_ID;
 
+// Scopes required
 const SCOPES = [
   'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/drive.file',
   'https://www.googleapis.com/auth/spreadsheets'
 ];
 
-let authClient = null;
-function getAuthClient() {
-  if (authClient) return authClient;
-  if (!SERVICE_ACCOUNT_FILE) throw new Error('SERVICE_ACCOUNT_FILE not configured');
-  authClient = new google.auth.GoogleAuth({
-    keyFile: SERVICE_ACCOUNT_FILE,
-    scopes: SCOPES
-  });
-  return authClient;
-}
-async function getDriveService() {
-  const auth = getAuthClient();
-  const client = await auth.getClient();
-  return google.drive({ version: 'v3', auth: client });
-}
-async function getSheetsService() {
-  const auth = getAuthClient();
-  const client = await auth.getClient();
-  return google.sheets({ version: 'v4', auth: client });
+// --- BEGIN improved Google auth & upload helpers ---
+// Supports either:
+//  - GOOGLE_SERVICE_ACCOUNT_CREDS (JSON string) OR
+//  - GOOGLE_SERVICE_ACCOUNT_FILE (path to JSON file on disk)
+let googleCredsObj = null;
+let googleAuthClient = null;
+
+function loadServiceAccount() {
+  if (googleCredsObj) return googleCredsObj;
+
+  if (process.env.GOOGLE_SERVICE_ACCOUNT_CREDS) {
+    try {
+      googleCredsObj = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_CREDS);
+      console.log('Loaded GOOGLE_SERVICE_ACCOUNT_CREDS from env. service_account_email=', googleCredsObj.client_email);
+      return googleCredsObj;
+    } catch (err) {
+      console.error('Failed to parse GOOGLE_SERVICE_ACCOUNT_CREDS', err && err.message);
+      throw err;
+    }
+  }
+
+  const keyFile = process.env.GOOGLE_SERVICE_ACCOUNT_FILE;
+  if (keyFile && fs.existsSync(keyFile)) {
+    try {
+      const raw = fs.readFileSync(keyFile, 'utf8');
+      googleCredsObj = JSON.parse(raw);
+      console.log('Loaded GOOGLE_SERVICE_ACCOUNT_FILE from disk. service_account_email=', googleCredsObj.client_email);
+      return googleCredsObj;
+    } catch (err) {
+      console.error('Failed to read/parse GOOGLE_SERVICE_ACCOUNT_FILE at', keyFile, err && err.message);
+      throw err;
+    }
+  }
+
+  console.warn('No Google service account credentials found. Set GOOGLE_SERVICE_ACCOUNT_CREDS or GOOGLE_SERVICE_ACCOUNT_FILE');
+  return null;
 }
 
-// --- Helpers: Upload file buffer to Drive and make it shareable, return link
+function getGoogleAuth() {
+  if (googleAuthClient) return googleAuthClient;
+  const creds = loadServiceAccount();
+  if (!creds) throw new Error('No Google service account credentials available');
+
+  googleAuthClient = new google.auth.JWT({
+    email: creds.client_email,
+    key: creds.private_key,
+    scopes: SCOPES,
+  });
+
+  return googleAuthClient;
+}
+
+async function getDriveService() {
+  const auth = getGoogleAuth();
+  await auth.authorize(); // ensures tokens
+  return google.drive({ version: 'v3', auth });
+}
+
+async function getSheetsService() {
+  const auth = getGoogleAuth();
+  await auth.authorize();
+  return google.sheets({ version: 'v4', auth });
+}
+
+// Improved upload that logs fileId and link and returns webViewLink
 async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet-stream') {
   if (!DRIVE_FOLDER_ID) throw new Error('DRIVE_FOLDER_ID not set');
+  const creds = loadServiceAccount();
+  if (!creds) throw new Error('Google creds missing');
+
   const drive = await getDriveService();
-  const res = await drive.files.create({
+
+  // convert buffer to stream
+  const bufferStream = new stream.PassThrough();
+  bufferStream.end(Buffer.isBuffer(fileBuffer) ? fileBuffer : Buffer.from(fileBuffer));
+
+  console.log(`Uploading file to Drive: name=${filename} size=${(fileBuffer ? fileBuffer.length : 0)} mime=${mimeType} folder=${DRIVE_FOLDER_ID}`);
+
+  const createRes = await drive.files.create({
     requestBody: {
       name: filename,
       parents: [DRIVE_FOLDER_ID],
     },
     media: {
       mimeType,
-      body: Buffer.isBuffer(fileBuffer) ? Buffer.from(fileBuffer) : fileBuffer
+      body: bufferStream,
     },
-    fields: 'id,webViewLink,webContentLink'
+    fields: 'id, webViewLink, webContentLink'
   });
 
-  const fileId = res.data.id;
-  // Make file viewable via link (anyoneWithLink)
+  const fileId = createRes.data && createRes.data.id;
+  console.log('Drive upload created fileId=', fileId);
+
+  // try to set permission to anyone with link
   try {
     await drive.permissions.create({
       fileId,
       requestBody: {
         role: 'reader',
-        type: 'anyone',
+        type: 'anyone'
       }
     });
+    console.log('Drive permission set to anyone (reader) for fileId=', fileId);
   } catch (err) {
-    console.warn('drive.permissions.create warning', err && err.message);
+    console.warn('drive.permissions.create failed for fileId=', fileId, 'error=', err && err.message);
+    // not fatal: file may still be accessible by accounts with access to folder
   }
 
-  // webViewLink might be present; otherwise construct
-  const link = res.data.webViewLink || `https://drive.google.com/file/d/${fileId}/view?usp=sharing`;
-  return link;
+  // get metadata to retrieve webViewLink reliably
+  try {
+    const meta = await drive.files.get({ fileId, fields: 'id, webViewLink, webContentLink' });
+    const link = meta.data.webViewLink || meta.data.webContentLink || `https://drive.google.com/file/d/${fileId}/view`;
+    console.log('Drive file accessible at', link);
+    return link;
+  } catch (err) {
+    console.warn('drive.files.get failed for fileId=', fileId, 'err=', err && err.message);
+    return `https://drive.google.com/file/d/${fileId}/view`;
+  }
 }
+// --- END improved Google auth & upload helpers ---
 
 // --- Helpers: Append row to Google Sheet
 async function appendToSheet(sheetId, valuesArray) {
@@ -121,7 +184,7 @@ async function appendToSheet(sheetId, valuesArray) {
   const sheets = await getSheetsService();
   const res = await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: 'Sheet1!A:A', // using default sheet - adjust if your sheet name differs
+    range: 'Sheet1!A:Z', // adjust sheet name if different
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: {
@@ -291,9 +354,11 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
       try {
         resumeLink = await uploadToDrive(req.file.buffer, filename, req.file.mimetype || 'application/octet-stream');
       } catch (err) {
-        console.error('Drive upload failed', err);
+        console.error('Drive upload failed', err && (err.stack || err.message || err));
         // continue but still try to append row (with empty resume link)
       }
+    } else {
+      console.log('No file attached with request (req.file empty)');
     }
 
     // collect answers (all non-file form fields)
@@ -319,11 +384,12 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
       const row = [ new Date().toISOString(), openingId, openingTitle || '', src, resumeLink || '', JSON.stringify(answers) ];
       if (SHEET_ID) {
         await appendToSheet(SHEET_ID, row);
+        console.log('Appended row to sheet', SHEET_ID);
       } else {
         console.warn('SHEET_ID not set, skipping appendToSheet');
       }
     } catch (err) {
-      console.error('appendToSheet error', err);
+      console.error('appendToSheet error', err && (err.stack || err.message || err));
     }
 
     return res.json({ ok: true, resumeLink });
