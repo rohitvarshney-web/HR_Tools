@@ -188,13 +188,13 @@ async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet
   }
 }
 
-// Append row to sheets
+// Append row to sheets — anchor range at A1 so new rows begin at column A
 async function appendToSheet(sheetId, valuesArray) {
   if (!sheetId) throw new Error('GOOGLE_SHEET_ID not set in env');
   const sheets = await getSheetsService();
   const res = await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: 'Sheet1!A1',   // 👈 anchor at A1 so rows always start from column A
+    range: 'Sheet1!A1',        // <<< anchor at A1 so appended rows start at column A
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: {
@@ -396,9 +396,37 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     data.responses.unshift(resp);
     writeData(data);
 
-    // Append to sheet (best-effort)
+    // Prepare answers to write to sheets:
+    // If opening.schema exists, map answer keys (ids) -> question labels
+    let answersForSheet = answers;
+    if (opening && Array.isArray(opening.schema) && opening.schema.length) {
+      try {
+        const idToLabel = {};
+        opening.schema.forEach(q => {
+          const qid = q.id || q.name || q.key;
+          const qlabel = q.label || q.title || q.name || qid;
+          if (qid) idToLabel[qid] = qlabel;
+        });
+        // build mapped object: label -> value (if duplicate labels exist, last one wins)
+        const mapped = {};
+        Object.keys(answers).forEach(k => {
+          const label = idToLabel[k] || k;
+          mapped[label] = answers[k];
+        });
+        answersForSheet = mapped;
+      } catch (mapErr) {
+        console.warn('Failed to map question ids to labels for sheet; using raw answers', mapErr && mapErr.message);
+        answersForSheet = answers;
+      }
+    } else {
+      // No schema: attempt lightweight mapping by checking if any keys look like UUIDs and there's a schema stored somewhere
+      // (optional improvement; skipping here)
+      answersForSheet = answers;
+    }
+
+    // Append to sheet (best-effort). We will start the row at column A by anchoring to A1 in appendToSheet.
     try {
-      const row = [ new Date().toISOString(), openingId, openingTitle || '', src, resumeLink || '', JSON.stringify(answers) ];
+      const row = [ new Date().toISOString(), openingId, openingTitle || '', src, resumeLink || '', JSON.stringify(answersForSheet) ];
       if (SHEET_ID) {
         await appendToSheet(SHEET_ID, row);
         console.log('Appended row to sheet', SHEET_ID);
