@@ -1,4 +1,4 @@
-// src/App.jsx
+// src/App.jsx (updated)
 import React, { useState, useEffect } from "react";
 import { v4 as uuidv4 } from "uuid";
 
@@ -46,7 +46,6 @@ const QUESTION_TYPES = [
    ------------------------- */
 function LoginPage({ backendUrl }) {
   const handleLogin = () => {
-    // Redirect user to backend OAuth entrypoint
     window.location.href = `${backendUrl}/auth/google`;
   };
 
@@ -71,9 +70,8 @@ function LoginPage({ backendUrl }) {
    Main App
    ------------------------- */
 export default function App() {
-  // Backend API root — keep debug override if you need it, otherwise use env.
   const API = process.env.REACT_APP_API_URL || 'https://hr-tools-backend.onrender.com';
-  const BACKEND = API; // used for OAuth redirect
+  const BACKEND = API;
 
   console.log('Using API endpoint:', API);
 
@@ -87,7 +85,7 @@ export default function App() {
 
   // auth / user
   const [user, setUser] = useState(null);
-  const [authChecked, setAuthChecked] = useState(false); // whether we've confirmed auth status
+  const [authChecked, setAuthChecked] = useState(false);
 
   // custom question modal
   const [showCustomModal, setShowCustomModal] = useState(false);
@@ -99,17 +97,12 @@ export default function App() {
   const [editingOpening, setEditingOpening] = useState(null);
 
   // public form modal
-  const [publicView, setPublicView] = useState(null); // { openingId, source, submitted, resumeLink }
+  const [publicView, setPublicView] = useState(null);
 
-  /* -------------------------
-     AUTH: check token & fetch profile
-     ------------------------- */
   useEffect(() => {
-    // On mount, look for token in URL (from OAuth callback) or in localStorage
     const params = new URLSearchParams(window.location.search);
     const tokenFromUrl = params.get('token');
     if (tokenFromUrl) {
-      // store and clean up URL
       localStorage.setItem('token', tokenFromUrl);
       params.delete('token');
       const newUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
@@ -117,28 +110,20 @@ export default function App() {
       fetchProfile(tokenFromUrl);
       return;
     }
-
     const token = localStorage.getItem('token');
     if (token) {
       fetchProfile(token);
     } else {
-      setAuthChecked(true); // no token; show login page
+      setAuthChecked(true);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // fetch logged-in user (call with token or read from localStorage)
   async function fetchProfile(token) {
     try {
       const t = token || localStorage.getItem('token');
-      if (!t) {
-        setUser(null);
-        setAuthChecked(true);
-        return;
-      }
+      if (!t) { setUser(null); setAuthChecked(true); return; }
       const res = await fetch(`${API}/api/me`, { headers: { Authorization: `Bearer ${t}` }});
       if (!res.ok) {
-        // invalid/expired token — remove and force sign-in
         localStorage.removeItem('token');
         setUser(null);
         setAuthChecked(true);
@@ -147,9 +132,9 @@ export default function App() {
       const u = await res.json();
       setUser(u);
       setAuthChecked(true);
-      // load server-side openings & responses for authenticated user
-      loadOpenings();
-      loadResponses();
+      await loadOpenings();
+      await loadResponses();
+      await loadForms(); // NEW: fetch forms for authenticated user
     } catch (err) {
       console.error('fetchProfile', err);
       localStorage.removeItem('token');
@@ -158,14 +143,12 @@ export default function App() {
     }
   }
 
-  // wrapper for API calls that handles 401 by cleaning token
   async function apiFetch(path, opts = {}) {
     const token = localStorage.getItem('token');
     const headers = { ...(opts.headers || {}) };
     if (token) headers.Authorization = `Bearer ${token}`;
     const res = await fetch(`${API}${path}`, { ...opts, headers });
     if (res.status === 401) {
-      // unauthorized -> clear token and state
       localStorage.removeItem('token');
       setUser(null);
       throw { status: 401, body: { error: 'unauthorized' } };
@@ -176,7 +159,7 @@ export default function App() {
   }
 
   /* -------------------------
-     Loaders for openings / responses
+     Loaders for openings / responses / forms
      ------------------------- */
   async function loadOpenings() {
     try {
@@ -198,12 +181,25 @@ export default function App() {
     }
   }
 
-  /* -------------------------
-     All the rest of your UI functions (unchanged behavior)
-     - create opening, edit, delete, addQuestion, publish, etc.
-     - I mostly reused your original code, only calling apiFetch when authorized.
-     ------------------------- */
+  // NEW: load forms from server and map them into forms state keyed by openingId
+  async function loadForms() {
+    try {
+      if (!localStorage.getItem('token')) return;
+      const allForms = await apiFetch('/api/forms');
+      // map by openingId. support multiple forms per opening by keeping only latest (or choose first)
+      const map = {};
+      (allForms || []).forEach(f => {
+        map[f.openingId] = { questions: (f.data && f.data.questions) || [], meta: (f.data && f.data.meta) || null, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at };
+      });
+      setForms(map);
+    } catch (err) {
+      console.error('loadForms', err);
+    }
+  }
 
+  /* -------------------------
+     UI functions (create/edit/delete/publish)
+     ------------------------- */
   function openCreate() {
     setNewOpening({ title: "", location: "Delhi", department: "", preferredSources: [], durationMins: 30 });
     setShowCreate(true);
@@ -227,7 +223,7 @@ export default function App() {
         setForms(f => ({ ...f, [created.id]: { questions: templateQuestions.slice(0,5).map(q => ({...q, id: uuidv4()})), meta: null } }));
       } else {
         const res = await apiFetch('/api/openings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        const created = { id: res.id, ...payload, createdAt: new Date().toISOString() };
+        const created = { id: res.id, ...payload, createdAt: res.createdAt || new Date().toISOString() };
         setOpenings(s => [created, ...s]);
         setForms(f => ({ ...f, [created.id]: { questions: templateQuestions.slice(0,5).map(q => ({...q, id: uuidv4()})), meta: null } }));
       }
@@ -246,6 +242,11 @@ export default function App() {
   function handleSaveEdit(e) {
     e.preventDefault();
     setOpenings((s) => s.map(op => op.id === editingOpening.id ? editingOpening : op));
+    // Persist edit if authenticated
+    if (localStorage.getItem('token')) {
+      apiFetch(`/api/openings/${editingOpening.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editingOpening) })
+        .catch(err => console.error('Failed to persist opening edit', err));
+    }
     setShowEdit(false);
   }
 
@@ -255,6 +256,8 @@ export default function App() {
       if (localStorage.getItem('token')) {
         await apiFetch(`/api/openings/${id}`, { method: 'DELETE' });
         setOpenings(s => s.filter(op => op.id !== id));
+        // server cascades forms deletion; refresh forms map
+        await loadForms();
       } else {
         setOpenings(s => s.filter(op => op.id !== id));
         setForms(f => { const copy = { ...f }; delete copy[id]; return copy; });
@@ -296,9 +299,11 @@ export default function App() {
     setShowCustomModal(false);
   }
 
-  function handlePublishForm(openingId) {
+  // NEW: create/update form record on server when publishing
+  async function handlePublishForm(openingId) {
     const opening = openings.find(o => o.id === openingId);
     if (!opening) return;
+    // generate formId and shareLinks (client-only link generation — file Id stored server-side)
     const formId = `form_${Date.now()}`;
     const sources = (opening.preferredSources && opening.preferredSources.length) ? opening.preferredSources : ["generic"];
     const shareLinks = {};
@@ -306,7 +311,40 @@ export default function App() {
       shareLinks[src] = `${window.location.origin}/apply/${formId}?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(src)}`;
     });
     const generic = `${window.location.origin}/apply/${formId}?opening=${encodeURIComponent(openingId)}`;
-    setForms((f) => ({ ...f, [openingId]: { ...(f[openingId] || { questions: [] }), questions: f[openingId]?.questions || [], meta: { formId, isPublished: true, publishedAt: new Date().toISOString(), shareLinks, genericLink: generic } } }));
+    // prepare questions and meta
+    const questions = (forms[openingId]?.questions && forms[openingId].questions.length) ? forms[openingId].questions : templateQuestions.slice(0,5).map(q => ({...q, id: uuidv4()}));
+    const meta = { formId, isPublished: true, publishedAt: new Date().toISOString(), shareLinks, genericLink: generic };
+
+    // update local state immediately
+    setForms((f) => ({ ...f, [openingId]: { questions, meta } }));
+
+    // persist to server (if authenticated) as a form record (create or update)
+    try {
+      if (!localStorage.getItem('token')) {
+        alert('Published locally (not persisted). Sign-in to persist forms to server.');
+        return;
+      }
+      // check if server form exists for this opening (we saved serverFormId in loadForms)
+      const existing = Object.values(forms).find(x => x && x.serverFormId && x.openingId === openingId);
+      // Instead of relying on existing from state, fetch server for the opening
+      const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
+      let serverForm = (serverForms && serverForms.length) ? serverForms[0] : null;
+
+      const payload = { openingId, data: { questions, meta } };
+      if (serverForm) {
+        const updated = await apiFetch(`/api/forms/${serverForm.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        // merge serverFormId info
+        setForms(f => ({ ...f, [openingId]: { questions: updated.data.questions || questions, meta: updated.data.meta || meta, serverFormId: updated.id, created_at: updated.created_at, updated_at: updated.updated_at } }));
+      } else {
+        const created = await apiFetch(`/api/forms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        setForms(f => ({ ...f, [openingId]: { questions: created.data.questions || questions, meta: created.data.meta || meta, serverFormId: created.id, created_at: created.created_at, updated_at: created.updated_at } }));
+      }
+
+      alert('Form published and saved to server.');
+    } catch (err) {
+      console.error('publish form failed', err);
+      alert('Publish failed: ' + (err?.body?.error || err?.body?.message || err.message || 'unknown'));
+    }
   }
 
   function handleCopy(text) {
@@ -317,7 +355,33 @@ export default function App() {
     setPublicView({ openingId, source, submitted: false });
   }
 
-  // NEW: submit to backend (multipart/form-data)
+  // NEW: delete single form (server-side if authenticated)
+  async function deleteFormByOpening(openingId) {
+    if (!confirm('Delete the server-saved form for this opening?')) return;
+    try {
+      if (!localStorage.getItem('token')) {
+        setForms(f => { const copy = { ...f }; delete copy[openingId]; return copy; });
+        alert('Form deleted locally.');
+        return;
+      }
+      // fetch server form id for the opening
+      const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
+      if (!serverForms || serverForms.length === 0) {
+        setForms(f => { const copy = { ...f }; delete copy[openingId]; return copy; });
+        alert('No server form found; removed local copy.');
+        return;
+      }
+      const serverForm = serverForms[0];
+      await apiFetch(`/api/forms/${serverForm.id}`, { method: 'DELETE' });
+      setForms(f => { const copy = { ...f }; delete copy[openingId]; return copy; });
+      alert('Form deleted from server.');
+    } catch (err) {
+      console.error('delete form failed', err);
+      alert('Delete failed: ' + (err?.body?.error || err.message || 'unknown'));
+    }
+  }
+
+  // NEW: submit public form (unchanged but kept here)
   async function handlePublicSubmit(e) {
     e.preventDefault();
     const formEl = e.target;
@@ -342,25 +406,15 @@ export default function App() {
         method: 'POST',
         body: fd
       });
-
-      // read raw text first (prevent json() from throwing on empty body)
       const text = await resp.text().catch(() => null);
       let data = null;
       if (text) {
-        try {
-          data = JSON.parse(text);
-        } catch (err) {
-          // the server returned something but it's not valid JSON
-          console.warn('Non-JSON response from server:', text);
-        }
+        try { data = JSON.parse(text); } catch (err) { console.warn('Non-JSON response from server:', text); }
       }
-
       if (!resp.ok) {
         const message = data?.error || data?.message || `Server returned ${resp.status}`;
         throw new Error(message);
       }
-
-      // success: prefer resumeLink if provided, otherwise show raw body
       const resumeLink = data?.resumeLink || data?.link || null;
       setPublicView(prev => ({ ...prev, submitted: true, resumeLink }));
       alert('Application submitted successfully!' + (resumeLink ? ` Resume: ${resumeLink}` : ''));
@@ -370,18 +424,12 @@ export default function App() {
     }
   }
 
-  // helper for public form layout mapping by keywords
   const currentSchema = publicView ? (forms[publicView.openingId]?.questions || []) : [];
   const findQ = (keyword) => {
     const k = (keyword || "").toLowerCase();
     return currentSchema.find(q => q.label && q.label.toLowerCase().includes(k));
   };
 
-  /* -------------------------
-     If auth not checked yet, show blank spinner
-     If auth checked & no user, show LoginPage
-     Otherwise show the full app UI
-     ------------------------- */
   if (!authChecked) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -391,20 +439,14 @@ export default function App() {
   }
 
   if (!user) {
-    // Not authenticated — show a clean login page (UI won't be accessible until login)
     return <LoginPage backendUrl={BACKEND} />;
   }
-
-  /* -------------------------
-     Authenticated UI (your original UI follows)
-     ------------------------- */
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800 flex">
       {/* Sidebar */}
       <aside className="w-64 bg-gray-900 text-gray-100 p-6 flex flex-col justify-between">
         <div>
-          {/* SIGN IN AREA */}
           <div className="flex items-center gap-3 mb-6">
             <div className="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center font-bold">SV</div>
             <div>
@@ -432,12 +474,11 @@ export default function App() {
         </div>
       </aside>
 
-      {/* Main content (rest of your UI unchanged) */}
+      {/* Main content */}
       <main className="flex-1 p-8 overflow-auto">
         {activeTab === "overview" && (
           <>
             <h1 className="text-2xl font-semibold mb-4">Overview</h1>
-            {/* ... rest of your existing overview UI ... */}
             <div className="grid grid-cols-3 gap-6 mb-6">
               <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
                 <div className="flex justify-between items-center mb-4">
@@ -538,6 +579,7 @@ export default function App() {
                   <div className="flex gap-2">
                     <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
                     <button onClick={() => handlePublishForm(op.id)} className="px-3 py-1 bg-green-600 text-white rounded">Publish</button>
+                    <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-1 border rounded text-red-600">Delete Saved Form</button>
                   </div>
                 </div>
 
@@ -613,7 +655,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Modals (create/edit/custom/public form) — unchanged UI, ensure resume input name is "resume" */}
+      {/* Modals (create/edit/custom/public form) — unchanged UI */}
       {showCreate && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-[720px] shadow-xl">
@@ -785,7 +827,6 @@ export default function App() {
                               <div className="text-xs text-gray-400 mt-1">Only JPG, PNG are allowed — up to 2MB</div>
                             </div>
                           </div>
-                          {/* ENSURE resume input uses name="resume" */}
                           <input type="file" name="resume" className="hidden" />
                         </label>
                       </div>
