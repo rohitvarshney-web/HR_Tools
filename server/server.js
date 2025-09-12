@@ -188,13 +188,13 @@ async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet
   }
 }
 
-// Append row to sheets (changed to anchor at A1 so appended rows always start at column A)
+// Append row to sheets (anchor at A1 so appended rows start from column A)
 async function appendToSheet(sheetId, valuesArray) {
   if (!sheetId) throw new Error('GOOGLE_SHEET_ID not set in env');
   const sheets = await getSheetsService();
   const res = await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: 'Sheet1!A1',   // <- anchor at A1 so new rows start at column A
+    range: 'Sheet1!A1',   // anchor at A1 ensures appended row uses column A as first cell
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: {
@@ -227,118 +227,16 @@ function authMiddleware(req, res, next) {
   }
 }
 
-//
-// === USER MANAGEMENT: signup / login / admin user endpoints ===
-//
-
-const bcrypt = require('bcryptjs');
-
-// helper: minimal email validation
-function isValidEmail(e) {
-  return typeof e === 'string' && /\S+@\S+\.\S+/.test(e);
-}
-
-// Create a new user (signup)
-app.post('/api/signup', async (req, res) => {
-  try {
-    const { email, password, name } = req.body || {};
-    if (!email || !password) return res.status(400).json({ error: 'email_and_password_required' });
-    if (!isValidEmail(email)) return res.status(400).json({ error: 'invalid_email' });
-    const data = readData();
-    const exists = data.users.find(u => u.email.toLowerCase() === email.toLowerCase());
-    if (exists) return res.status(409).json({ error: 'user_exists' });
-
-    const hashed = await bcrypt.hash(password, 10);
-    const user = {
-      id: `u_${Date.now()}`,
-      email: email.toLowerCase(),
-      passwordHash: hashed,
-      name: name || '',
-      role: 'recruiter', // default role, can be changed by admin
-      createdAt: new Date().toISOString()
-    };
-    data.users.push(user);
-    writeData(data);
-
-    // return token (do not send passwordHash)
-    const token = signUserToken(user);
-    return res.json({ ok: true, token, user: { id: user.id, email: user.email, name: user.name, role: user.role } });
-  } catch (err) {
-    console.error('/api/signup err', err && (err.stack || err.message));
-    return res.status(500).json({ error: 'server_error' });
-  }
-});
-
-// Login with email/password
-app.post('/api/login', async (req, res) => {
-  try {
-    const { email, password } = req.body || {};
-    if (!email || !password) return res.status(400).json({ error: 'email_and_password_required' });
-
-    const data = readData();
-    const user = data.users.find(u => u.email.toLowerCase() === (email || '').toLowerCase());
-    if (!user || !user.passwordHash) return res.status(401).json({ error: 'invalid_credentials' });
-
-    const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok) return res.status(401).json({ error: 'invalid_credentials' });
-
-    const token = signUserToken(user);
-    return res.json({ ok: true, token, user: { id: user.id, email: user.email, name: user.name, role: user.role } });
-  } catch (err) {
-    console.error('/api/login err', err && (err.stack || err.message));
-    return res.status(500).json({ error: 'server_error' });
-  }
-});
-
-// requireRole middleware
-function requireRole(role) {
-  return (req, res, next) => {
-    if (!req.user) return res.status(401).json({ error: 'not_authenticated' });
-    if (!req.user.role) return res.status(403).json({ error: 'role_missing' });
-    // allow if role matches or user is admin
-    if (req.user.role === role || req.user.role === 'admin') return next();
-    return res.status(403).json({ error: 'forbidden' });
-  };
-}
-
-// Admin: list users (protected)
-app.get('/api/users', authMiddleware, requireRole('admin'), (req, res) => {
-  const data = readData();
-  // return users without passwordHash
-  const safe = (data.users || []).map(u => ({ id: u.id, email: u.email, name: u.name, role: u.role, createdAt: u.createdAt }));
-  return res.json(safe);
-});
-
-// Admin: update user (role/name) - no password reset here
-app.put('/api/users/:id', authMiddleware, requireRole('admin'), (req, res) => {
-  const id = req.params.id;
-  const { role, name } = req.body || {};
-  const data = readData();
-  const idx = data.users.findIndex(u => u.id === id);
-  if (idx === -1) return res.status(404).json({ error: 'user_not_found' });
-  if (role) data.users[idx].role = role;
-  if (name !== undefined) data.users[idx].name = name;
-  writeData(data);
-  const u = data.users[idx];
-  return res.json({ id: u.id, email: u.email, name: u.name, role: u.role, createdAt: u.createdAt });
-});
-
-// Admin: delete user
-app.delete('/api/users/:id', authMiddleware, requireRole('admin'), (req, res) => {
-  const id = req.params.id;
-  const data = readData();
-  const exists = data.users.find(u => u.id === id);
-  if (!exists) return res.status(404).json({ error: 'user_not_found' });
-  data.users = data.users.filter(u => u.id !== id);
-  writeData(data);
-  return res.json({ ok: true });
-});
-
-
-// Passport Google OAuth
+// Passport Google OAuth (allowlist behavior)
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 
+function normEmail(e) {
+  return (e || '').toString().trim().toLowerCase();
+}
+
+// We will only allow sign-ins where the email is already present in server_data/data.json users array.
+// This prevents automatically creating users on first Google sign-in.
 if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET) {
   passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_OAUTH_CLIENT_ID,
@@ -347,21 +245,32 @@ if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET
   }, async (accessToken, refreshToken, profile, done) => {
     try {
       const data = readData();
-      const email = profile.emails && profile.emails[0] && profile.emails[0].value;
-      let user = data.users.find(u => u.email === email);
+      const email = normEmail(profile.emails && profile.emails[0] && profile.emails[0].value);
+      if (!email) {
+        return done(null, false, { message: 'no_email_in_profile' });
+      }
+
+      // Find the user in your allowlist
+      let user = (data.users || []).find(u => normEmail(u.email) === email);
+
       if (!user) {
-        user = {
-          id: `u_${Date.now()}`,
-          email,
-          name: profile.displayName || '',
-          role: 'recruiter',
-          createdAt: new Date().toISOString()
-        };
-        data.users.push(user);
+        // Not allowed — reject sign-in
+        console.warn('OAuth attempt by non-allowlisted email:', email);
+        return done(null, false, { message: 'email_not_allowed' });
+      }
+
+      // Ensure role exists
+      if (!user.role) user.role = 'recruiter';
+
+      // Optional: update name from profile if missing
+      if (!user.name && profile.displayName) {
+        user.name = profile.displayName;
         writeData(data);
       }
+
       return done(null, user);
     } catch (err) {
+      console.error('GoogleStrategy error', err && (err.stack || err.message));
       return done(err);
     }
   }));
@@ -372,17 +281,25 @@ if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET
 
 // OAuth routes
 app.get('/auth/google', (req, res, next) => {
-  if (!passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
+  if (!passport._strategy || !passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
   passport.authenticate('google', { scope: ['profile', 'email'] })(req, res, next);
 });
 
 app.get('/auth/google/callback', (req, res, next) => {
-  if (!passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
-  passport.authenticate('google', { session: false }, (err, user) => {
-    if (err || !user) {
-      console.error('OAuth callback error', err);
-      return res.status(500).json({ error: 'oauth_failed' });
+  if (!passport._strategy || !passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
+
+  passport.authenticate('google', { session: false }, (err, user, info) => {
+    if (err) {
+      console.error('OAuth callback error (err):', err && (err.stack || err.message));
+      return res.redirect(`${FRONTEND_URL}?oauth_error=${encodeURIComponent(err.message || 'oauth_error')}`);
     }
+    if (!user) {
+      const reason = (info && info.message) ? info.message : 'oauth_denied';
+      console.warn('OAuth denied:', reason);
+      return res.redirect(`${FRONTEND_URL}?oauth_error=${encodeURIComponent(reason)}`);
+    }
+
+    // Successful login — create JWT and redirect with token
     const token = signUserToken(user);
     const redirectTo = `${FRONTEND_URL}?token=${encodeURIComponent(token)}`;
     return res.redirect(redirectTo);
@@ -401,6 +318,11 @@ app.get('/api/me', authMiddleware, (req, res) => {
 app.get('/api/openings', authMiddleware, (req, res) => {
   const data = readData();
   return res.json(data.openings || []);
+});
+
+app.post('/api.openings', authMiddleware, (req, res) => {
+  // keep original endpoint name used in your app if any difference; rarely used
+  return res.status(404).json({ error: 'not_implemented' });
 });
 
 app.post('/api/openings', authMiddleware, (req, res) => {
