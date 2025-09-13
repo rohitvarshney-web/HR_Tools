@@ -633,6 +633,37 @@ export default function App() {
   }
 
   /* -------------------------
+     Helper utilities for candidate display
+  ------------------------- */
+  function resolveCandidateName(resp, opening) {
+    // Prefer explicit top-level fields first (server now stores fullName/email/phone), then common answer keys
+    if (!resp) return 'Candidate';
+    if (resp.fullName) return resp.fullName;
+    // look in answers object (case-insensitive)
+    const answers = resp.answers || {};
+    const keys = Object.keys(answers || {});
+    const findKey = (cands) => {
+      for (const cand of cands) {
+        const found = keys.find(k => (k || '').toString().toLowerCase().trim() === cand.toLowerCase().trim());
+        if (found) return answers[found];
+      }
+      return null;
+    };
+    const nameCandidates = ['full name','fullname','name','candidate name','applicant name','your name','fullName','name'];
+    const byAns = findKey(nameCandidates);
+    if (byAns) return byAns;
+    // fallback: if opening title was previously used as name, avoid that. use generic
+    return 'Candidate';
+  }
+
+  function resolveCandidateLocation(resp, opening) {
+    // Prefer resp.location (new server field), then opening.location
+    if (resp && resp.location) return resp.location;
+    if (opening && opening.location) return opening.location;
+    return null;
+  }
+
+  /* -------------------------
      UI
   ------------------------- */
   return (
@@ -774,11 +805,22 @@ export default function App() {
                   {responses.length === 0 && <div className="text-sm text-gray-500">No candidates yet.</div>}
                   {responses.map(resp => {
                     const opening = openings.find(o => o.id === resp.openingId) || {};
+                    const candidateName = resolveCandidateName(resp, opening);
+                    const candidateLocation = resolveCandidateLocation(resp, opening);
                     return (
                       <div key={resp.id} className="p-4 border rounded flex justify-between items-start">
                         <div>
-                          <div className="font-semibold">{resp.answers?.name || resp.answers?.fullName || opening.title || 'Candidate'}</div>
-                          <div className="text-xs text-gray-500">Applied for: {opening.title || resp.openingId} • {new Date(resp.createdAt).toLocaleString()}</div>
+                          {/* show candidate full name (prominent) */}
+                          <div className="font-semibold">{candidateName}</div>
+
+                          {/* show opening/location/date line */}
+                          <div className="text-xs text-gray-500">
+                            {/* If there's an opening title, still show it as context after location/date */}
+                            {candidateLocation ? `${candidateLocation} • ` : ''}
+                            Applied on: {new Date(resp.createdAt).toLocaleString()}
+                            {opening.title ? ` • ${opening.title}` : ''}
+                          </div>
+
                           <div className="text-xs text-gray-500 mt-2">Source: {resp.source}</div>
                           {resp.resumeLink && <div className="text-xs mt-2"><a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">Resume</a></div>}
                         </div>
