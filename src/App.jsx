@@ -118,19 +118,20 @@ function MultiSelectDropdown({ label, items = [], selectedSet, onToggle, onClear
 
   return (
     <div className="mb-3 relative" ref={ref}>
-      <div className="flex items-center justify-between mb-2">
+      {/* header: label left, dropdown button then Clear on the extreme right */}
+      <div className="flex items-center mb-2 justify-between">
         <div className="font-medium text-sm">{label}</div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => { onClear && onClear(); setQuery(""); }} className="text-xs text-blue-600 underline">Clear</button>
-          <button onClick={() => setOpen(s => !s)} className="flex items-center gap-2 px-3 py-1 border rounded text-sm">
+        <div className="flex-1 flex items-center justify-end gap-2">
+          <button onClick={() => setOpen(s => !s)} className="flex items-center gap-2 px-3 py-1 border rounded text-sm bg-white">
             <span>{displayLabel}</span>
             <span className="ml-1">{<Icon name="chevronDown" className="w-4 h-4" />}</span>
           </button>
+          <button onClick={() => { onClear && onClear(); setQuery(""); setOpen(false); }} className="text-xs text-blue-600 underline ml-4">Clear</button>
         </div>
       </div>
 
       {open && (
-        <div className="border rounded max-h-60 overflow-auto p-2 bg-white shadow-sm z-50 absolute w-64">
+        <div className="border rounded max-h-60 overflow-auto p-2 bg-white shadow-sm z-50 absolute w-64 right-0">
           <div className="flex items-center gap-2 mb-2">
             <div className="text-gray-400">{<Icon name="search" className="w-4 h-4" />}</div>
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${label}`} className="w-full p-1 text-sm border rounded" />
@@ -189,7 +190,7 @@ export default function App() {
   const [showFormModal, setShowFormModal] = useState(false);
   const [formModalOpeningId, setFormModalOpeningId] = useState(null);
 
-  // Filters state: each is a Set of selected values
+  // Filters state: each is a Set of selected values (including status)
   const [filters, setFilters] = useState({
     openings: new Set(),
     locations: new Set(),
@@ -197,6 +198,7 @@ export default function App() {
     sources: new Set(),
     names: new Set(),
     emails: new Set(),
+    statuses: new Set(),
   });
 
   useEffect(() => {
@@ -693,6 +695,7 @@ export default function App() {
         sources: new Set(prev.sources),
         names: new Set(prev.names),
         emails: new Set(prev.emails),
+        statuses: new Set(prev.statuses),
       };
       if (copy[group].has(value)) copy[group].delete(value);
       else copy[group].add(value);
@@ -705,7 +708,7 @@ export default function App() {
   }
 
   function clearAllFilters() {
-    setFilters({ openings: new Set(), locations: new Set(), departments: new Set(), sources: new Set(), names: new Set(), emails: new Set() });
+    setFilters({ openings: new Set(), locations: new Set(), departments: new Set(), sources: new Set(), names: new Set(), emails: new Set(), statuses: new Set() });
   }
 
   // Build unique lists for filter options (computed each render)
@@ -719,9 +722,10 @@ export default function App() {
     return resolveCandidateName(r, op) || '';
   }).filter(Boolean))).sort();
   const emails = Array.from(new Set(responses.map(r => resolveCandidateEmail(r)).filter(Boolean))).sort();
+  const statuses = Array.from(new Set(responses.map(r => (r.status || 'Applied')).filter(Boolean))).sort();
 
   // Apply combined filters to responses (computed each render)
-  const anyFilterSelected = filters.openings.size || filters.locations.size || filters.departments.size || filters.sources.size || filters.names.size || filters.emails.size;
+  const anyFilterSelected = filters.openings.size || filters.locations.size || filters.departments.size || filters.sources.size || filters.names.size || filters.emails.size || filters.statuses.size;
   const filteredResponses = (!anyFilterSelected) ? responses : responses.filter(r => {
     const op = openings.find(o => o.id === r.openingId) || {};
     if (filters.openings.size) {
@@ -747,6 +751,10 @@ export default function App() {
     if (filters.emails.size) {
       const email = (resolveCandidateEmail(r) || '').toString();
       if (!filters.emails.has(email)) return false;
+    }
+    if (filters.statuses.size) {
+      const st = (r.status || 'Applied').toString();
+      if (!filters.statuses.has(st)) return false;
     }
     return true;
   });
@@ -906,7 +914,11 @@ export default function App() {
                       <div key={resp.id} className="p-4 border rounded flex justify-between items-start">
                         <div>
                           {/* Candidate name at top */}
-                          <div className="text-lg font-medium">{candidateName}</div>
+                          <div className="text-lg font-medium">
+                            {candidateName}
+                            {/* email in parentheses, same secondary style as other details */}
+                            {candidateEmail ? <span className="text-xs text-gray-500 ml-2">({candidateEmail})</span> : null}
+                          </div>
 
                           {/* Opening name and location inline with small muted style */}
                           <div className="text-xs text-gray-500 mt-1">
@@ -926,9 +938,6 @@ export default function App() {
                           ) : (
                             <div className="text-xs mt-2 text-gray-500">{resp.id}</div>
                           )}
-
-                          {/* show email under name if available */}
-                          {candidateEmail && <div className="text-xs text-gray-500 mt-1">{candidateEmail}</div>}
                         </div>
 
                         <div className="flex flex-col items-end gap-2">
@@ -1002,6 +1011,14 @@ export default function App() {
                     selectedSet={filters.emails}
                     onToggle={(v) => toggleFilter('emails', v)}
                     onClear={() => clearFilterGroup('emails')}
+                  />
+
+                  <MultiSelectDropdown
+                    label="Status"
+                    items={statuses}
+                    selectedSet={filters.statuses}
+                    onToggle={(v) => toggleFilter('statuses', v)}
+                    onClear={() => clearFilterGroup('statuses')}
                   />
                 </div>
 
