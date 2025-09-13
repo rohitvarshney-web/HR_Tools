@@ -87,7 +87,6 @@ function LoginPage({ backendUrl }) {
    - onChange: (newSelectedArray) => void
    - placeholder: text
    - label: visible label to left
-   - clearable: show Clear link (we will position it)
 ------------------------- */
 function MultiSelectDropdown({ items = [], selected = [], onChange, placeholder = "Select", label }) {
   const [open, setOpen] = useState(false);
@@ -151,15 +150,17 @@ function MultiSelectDropdown({ items = [], selected = [], onChange, placeholder 
    Main App
    ------------------------- */
 export default function App() {
-  const API = process.env.REACT_APP_API_URL || 'http://localhost:4000';
+  const API = process.env.REACT_APP_API_URL || 'https://hr-tools-backend.onrender.com';
   const BACKEND = API;
+
+  console.log('Using API endpoint:', API);
 
   const [openings, setOpenings] = useState([]);
   const [activeTab, setActiveTab] = useState("overview");
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newOpening, setNewOpening] = useState({ title: "", location: "Delhi", department: "", preferredSources: [], durationMins: 30 });
-  const [forms, setForms] = useState({}); // keyed by openingId
+  const [forms, setForms] = useState({}); // keyed by openingId: { questions: [...], meta: {...} }
   const [responses, setResponses] = useState([]);
 
   // Question bank (server-backed)
@@ -169,7 +170,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
 
-  // custom question modal
+  // custom question modal (only shown from inside form modal)
   const [showCustomModal, setShowCustomModal] = useState(false);
   const [customOpeningId, setCustomOpeningId] = useState(null);
   const [customQ, setCustomQ] = useState({ label: "", type: "short_text", required: false, optionsText: "" });
@@ -213,22 +214,6 @@ export default function App() {
     }
   }, []);
 
-  // Basic API fetch wrapper
-  async function apiFetch(path, opts = {}) {
-    const token = localStorage.getItem('token');
-    const headers = { ...(opts.headers || {}) };
-    if (token) headers.Authorization = `Bearer ${token}`;
-    const res = await fetch(`${API}${path}`, { ...opts, headers });
-    if (res.status === 401) {
-      localStorage.removeItem('token');
-      setUser(null);
-      throw { status: 401, body: { error: 'unauthorized' } };
-    }
-    const json = await res.json().catch(() => null);
-    if (!res.ok) throw { status: res.status, body: json };
-    return json;
-  }
-
   async function fetchProfile(token) {
     try {
       const t = token || localStorage.getItem('token');
@@ -255,40 +240,86 @@ export default function App() {
     }
   }
 
-  /* ---------- HELPERS: FILE / store behavior (reuse your server endpoints) ---------- */
+  async function apiFetch(path, opts = {}) {
+    const token = localStorage.getItem('token');
+    const headers = { ...(opts.headers || {}) };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(`${API}${path}`, { ...opts, headers });
+    if (res.status === 401) {
+      localStorage.removeItem('token');
+      setUser(null);
+      throw { status: 401, body: { error: 'unauthorized' } };
+    }
+    const json = await res.json().catch(() => null);
+    if (!res.ok) throw { status: res.status, body: json };
+    return json;
+  }
 
-  // load openings
+  /* -------------------------
+     Helper: ensure core fields exist in a form object (mutating copy)
+  ------------------------- */
+  function ensureCoreFieldsInForm(formObj) {
+    // formObj shape: { questions: [...], meta: {...} }
+    // ensure required meta.coreFields exists
+    const existingIds = new Set((formObj.questions || []).map(q => q.id));
+    const coreOrder = [CORE_QUESTIONS.fullName, CORE_QUESTIONS.email, CORE_QUESTIONS.phone, CORE_QUESTIONS.resume];
+    // Insert any missing core question at start (preserve order)
+    const missing = coreOrder.filter(cq => !existingIds.has(cq.id)).map(cq => ({ ...cq }));
+    if (missing.length) {
+      formObj.questions = [...missing, ...(formObj.questions || [])];
+    }
+    // Always mark required
+    formObj.questions = (formObj.questions || []).map(q => {
+      if (PROTECTED_IDS.has(q.id)) {
+        return { ...q, required: true };
+      }
+      return q;
+    });
+    // Ensure meta.coreFields mapping
+    formObj.meta = formObj.meta || {};
+    formObj.meta.coreFields = formObj.meta.coreFields || {
+      fullNameId: CORE_QUESTIONS.fullName.id,
+      emailId: CORE_QUESTIONS.email.id,
+      phoneId: CORE_QUESTIONS.phone.id,
+      resumeId: CORE_QUESTIONS.resume.id,
+    };
+    return formObj;
+  }
+
+  /* -------------------------
+     Loaders for openings / responses / forms / question bank
+  ------------------------- */
   async function loadOpenings() {
     try {
       if (!localStorage.getItem('token')) return;
       const rows = await apiFetch('/api/openings');
-      setOpenings(rows || []);
+      setOpenings(rows);
     } catch (err) {
       console.error('loadOpenings', err);
     }
   }
 
-  // load responses
   async function loadResponses() {
     try {
       if (!localStorage.getItem('token')) return;
       const rows = await apiFetch('/api/responses');
-      setResponses(rows || []);
+      setResponses(rows);
     } catch (err) {
       console.error('loadResponses', err);
     }
   }
 
-  // load forms
+  // load forms from server and map them into forms state keyed by openingId
   async function loadForms() {
     try {
       if (!localStorage.getItem('token')) return;
       const allForms = await apiFetch('/api/forms');
       const map = {};
       (allForms || []).forEach(f => {
-        const obj = { questions: (f.data && f.data.questions) || [], meta: (f.data && f.data.meta) || null, serverFormId: f.id, openingId: f.openingId };
+        const obj = { questions: (f.data && f.data.questions) || [], meta: (f.data && f.data.meta) || null, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at, openingId: f.openingId };
         map[f.openingId] = ensureCoreFieldsInForm(obj);
       });
+      // For openings without a saved server form, keep an initialized local form with core fields
       (openings || []).forEach(op => {
         if (!map[op.id]) {
           const base = { questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } };
@@ -310,32 +341,6 @@ export default function App() {
     } catch (err) {
       console.error('loadQuestionBank', err);
     }
-  }
-
-  /* -------------------------
-     Helper: ensure core fields exist in a form object (mutating copy)
-  ------------------------- */
-  function ensureCoreFieldsInForm(formObj) {
-    const existingIds = new Set((formObj.questions || []).map(q => q.id));
-    const coreOrder = [CORE_QUESTIONS.fullName, CORE_QUESTIONS.email, CORE_QUESTIONS.phone, CORE_QUESTIONS.resume];
-    const missing = coreOrder.filter(cq => !existingIds.has(cq.id)).map(cq => ({ ...cq }));
-    if (missing.length) {
-      formObj.questions = [...missing, ...(formObj.questions || [])];
-    }
-    formObj.questions = (formObj.questions || []).map(q => {
-      if (PROTECTED_IDS.has(q.id)) {
-        return { ...q, required: true };
-      }
-      return q;
-    });
-    formObj.meta = formObj.meta || {};
-    formObj.meta.coreFields = formObj.meta.coreFields || {
-      fullNameId: CORE_QUESTIONS.fullName.id,
-      emailId: CORE_QUESTIONS.email.id,
-      phoneId: CORE_QUESTIONS.phone.id,
-      resumeId: CORE_QUESTIONS.resume.id,
-    };
-    return formObj;
   }
 
   /* -------------------------
@@ -367,6 +372,7 @@ export default function App() {
         created = { id: res.id, ...payload, createdAt: res.createdAt || new Date().toISOString() };
         setOpenings(s => [created, ...s]);
       }
+      // initialize local form for this opening with core fields + small template
       setForms(f => ({ ...f, [created.id]: ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } }) }));
       setShowCreate(false);
     } catch (err) {
@@ -383,6 +389,7 @@ export default function App() {
   function handleSaveEdit(e) {
     e.preventDefault();
     setOpenings((s) => s.map(op => op.id === editingOpening.id ? editingOpening : op));
+    // Persist edit if authenticated
     if (localStorage.getItem('token')) {
       apiFetch(`/api/openings/${editingOpening.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editingOpening) })
         .catch(err => console.error('Failed to persist opening edit', err));
@@ -396,6 +403,7 @@ export default function App() {
       if (localStorage.getItem('token')) {
         await apiFetch(`/api/openings/${id}`, { method: 'DELETE' });
         setOpenings(s => s.filter(op => op.id !== id));
+        // refresh forms map
         await loadForms();
       } else {
         setOpenings(s => s.filter(op => op.id !== id));
@@ -406,13 +414,21 @@ export default function App() {
     }
   }
 
+  // addQuestion respects server-provided question IDs (if present) and blocks duplicates of protected ids
   function addQuestion(openingId, q) {
     const question = { ...q, id: q.id || uuidv4() };
     setForms((f) => {
       const existing = f[openingId] || { questions: [], meta: null };
       const exists = (existing.questions || []).some(x => x.id === question.id);
-      if (exists) return f;
-      if (PROTECTED_IDS.has(question.id)) return { ...f };
+      if (exists) {
+        // already present — ignore
+        return f;
+      }
+      // don't allow adding protected question duplicates (core questions are already present)
+      if (PROTECTED_IDS.has(question.id)) {
+        // if not present, ensureCoreFieldsInForm will add them; but if already present or protected, ignore
+        return { ...f };
+      }
       const newQuestions = [...(existing.questions || []), question];
       return { ...f, [openingId]: { ...existing, questions: newQuestions } };
     });
@@ -439,12 +455,14 @@ export default function App() {
     });
   }
 
+  // open custom modal (only used inside form editor modal)
   function openCustomModalFor(openingId) {
     setCustomOpeningId(openingId);
     setCustomQ({ label: "", type: "short_text", required: false, optionsText: "" });
     setShowCustomModal(true);
   }
 
+  // Create custom question; persist to server bank if signed in, then add to local form
   async function handleAddCustomQuestion(e) {
     e.preventDefault();
     const options = customQ.optionsText.split("\n").map(s => s.trim()).filter(Boolean);
@@ -465,27 +483,36 @@ export default function App() {
     }
   }
 
+  // Save form without publishing (creates/updates server form and sets meta.coreFields)
   async function handleSaveForm(openingId) {
     const opening = openings.find(o => o.id === openingId);
     if (!opening) return;
+
+    // ensure core present
     const current = forms[openingId] || { questions: [] };
     const ensured = ensureCoreFieldsInForm({ questions: (current.questions || []).map(q => ({ ...q })), meta: { ...(current.meta || {}) } });
+
     const questionsToSave = ensured.questions;
     const meta = ensured.meta || {};
+    // persist to server
     try {
       if (!localStorage.getItem('token')) {
+        // store locally only
         setForms(f => ({ ...f, [openingId]: { questions: questionsToSave, meta } }));
         alert('Not signed in — changes saved locally only.');
         return;
       }
+
       const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
       const serverForm = (serverForms && serverForms.length) ? serverForms[0] : null;
       const payload = { openingId, data: { questions: questionsToSave, meta } };
+
       if (serverForm) {
         await apiFetch(`/api/forms/${serverForm.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       } else {
         await apiFetch(`/api/forms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       }
+
       setForms(f => ({ ...f, [openingId]: { questions: questionsToSave, meta } }));
       alert('Form saved successfully.');
       await loadForms();
@@ -495,6 +522,7 @@ export default function App() {
     }
   }
 
+  // Publish form (generates share links + persists)
   async function handlePublishForm(openingId) {
     const opening = openings.find(o => o.id === openingId);
     if (!opening) return;
@@ -505,11 +533,17 @@ export default function App() {
       shareLinks[src] = `${window.location.origin}/apply/${formId}?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(src)}`;
     });
     const generic = `${window.location.origin}/apply/${formId}?opening=${encodeURIComponent(openingId)}`;
+
+    // ensure core and meta
     const current = forms[openingId] || { questions: [] };
     const ensured = ensureCoreFieldsInForm({ questions: (current.questions || []).map(q => ({ ...q })), meta: (current.meta || {}) });
+
     const questionsToPublish = ensured.questions;
     const meta = { ...(ensured.meta || {}), formId, isPublished: true, publishedAt: new Date().toISOString(), shareLinks, genericLink: generic };
+
+    // optimistic local update
     setForms((f) => ({ ...f, [openingId]: { questions: questionsToPublish, meta } }));
+
     try {
       if (!localStorage.getItem('token')) {
         alert('Published locally (not persisted). Sign-in to persist forms to server.');
@@ -518,6 +552,7 @@ export default function App() {
       const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
       let serverForm = (serverForms && serverForms.length) ? serverForms[0] : null;
       const payload = { openingId, data: { questions: questionsToPublish, meta } };
+
       if (serverForm) {
         await apiFetch(`/api/forms/${serverForm.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       } else {
@@ -539,6 +574,7 @@ export default function App() {
     setPublicView({ openingId, source, submitted: false });
   }
 
+  // Delete single form
   async function deleteFormByOpening(openingId) {
     if (!confirm('Delete the server-saved form for this opening?')) return;
     try {
@@ -563,8 +599,9 @@ export default function App() {
     }
   }
 
-  // FORM MODAL open/close functions (ensures core fields exist)
+  // Open/close Form Editor modal
   function openFormModal(openingId) {
+    // ensure the opening has a local form in state (with core fields)
     setForms((f) => {
       const copy = { ...f };
       if (!copy[openingId]) {
@@ -582,13 +619,14 @@ export default function App() {
     setFormModalOpeningId(null);
   }
 
-  // PUBLIC apply form handler (basic)
+  // Submit public form (unchanged)
   async function handlePublicSubmit(e) {
     e.preventDefault();
     const formEl = e.target;
     const openingId = publicView.openingId;
     const source = publicView.source || 'unknown';
     const fd = new FormData();
+
     for (let i = 0; i < formEl.elements.length; i++) {
       const el = formEl.elements[i];
       if (!el.name) continue;
@@ -600,6 +638,7 @@ export default function App() {
         fd.append(el.name, el.value);
       }
     }
+
     try {
       const resp = await fetch(`${API}/api/apply?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(source)}`, {
         method: 'POST',
@@ -624,7 +663,6 @@ export default function App() {
     }
   }
 
-  // find current schema for public form rendering
   const currentSchema = publicView ? (forms[publicView.openingId]?.questions || []) : [];
   const findQ = (keyword) => {
     const k = (keyword || "").toLowerCase();
@@ -634,6 +672,8 @@ export default function App() {
   /* -------------------------
      Hiring management helpers
   ------------------------- */
+
+  // Update candidate status
   async function updateCandidateStatus(responseId, newStatus) {
     try {
       setResponses(prev => prev.map(r => r.id === responseId ? { ...r, status: newStatus } : r));
@@ -793,7 +833,8 @@ export default function App() {
           <nav className="space-y-2">
             <div onClick={() => setActiveTab("overview")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'overview' ? 'bg-gray-800' : ''}`}>{<Icon name="menu" />} Overview</div>
             <div onClick={() => setActiveTab("jobs")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'jobs' ? 'bg-gray-800' : ''}`}>Jobs</div>
-            <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg-gray-800' : ''}`}>Hiring</div>
+            {/* "Form Editor" nav removed — editor is accessible from opening card */}
+            <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg.Gray-800' : ''}`}>Hiring</div>
           </nav>
         </div>
       </aside>
@@ -900,86 +941,85 @@ export default function App() {
               <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
                 <h2 className="font-semibold mb-4">Candidates</h2>
 
-                {/* Filters area */}
-                <div className="bg-gray-50 border rounded p-4 mb-4">
-                  <div className="grid grid-cols-3 gap-4">
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="text-sm font-medium">Opening</div>
-                        <div className="text-sm"><button onClick={() => setFilterOpening([])} className="text-blue-600">Clear</button></div>
+                <div className="space-y-4">
+                  {/* Filters area */}
+                  <div className="bg-gray-50 border rounded p-4 mb-4">
+                    <div className="grid grid-cols-3 gap-4">
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="text-sm font-medium">Opening</div>
+                          <div className="text-sm"><button onClick={() => setFilterOpening([])} className="text-blue-600">Clear</button></div>
+                        </div>
+                        <MultiSelectDropdown items={openingTitlesList} selected={filterOpening} onChange={setFilterOpening} placeholder="All Opening" />
                       </div>
-                      <MultiSelectDropdown items={openingTitlesList} selected={filterOpening} onChange={setFilterOpening} placeholder="All Opening" />
-                    </div>
 
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="text-sm font-medium">Location</div>
-                        <div className="text-sm"><button onClick={() => setFilterLocation([])} className="text-blue-600">Clear</button></div>
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="text-sm font-medium">Location</div>
+                          <div className="text-sm"><button onClick={() => setFilterLocation([])} className="text-blue-600">Clear</button></div>
+                        </div>
+                        <MultiSelectDropdown items={locationsList} selected={filterLocation} onChange={setFilterLocation} placeholder="All Location" />
                       </div>
-                      <MultiSelectDropdown items={locationsList} selected={filterLocation} onChange={setFilterLocation} placeholder="All Location" />
-                    </div>
 
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="text-sm font-medium">Department</div>
-                        <div className="text-sm"><button onClick={() => setFilterDepartment([])} className="text-blue-600">Clear</button></div>
+                      <div>
+                        <div className="flex items:center justify-between mb-1">
+                          <div className="text-sm font-medium">Department</div>
+                          <div className="text-sm"><button onClick={() => setFilterDepartment([])} className="text-blue-600">Clear</button></div>
+                        </div>
+                        <MultiSelectDropdown items={departmentsList} selected={filterDepartment} onChange={setFilterDepartment} placeholder="All Department" />
                       </div>
-                      <MultiSelectDropdown items={departmentsList} selected={filterDepartment} onChange={setFilterDepartment} placeholder="All Department" />
-                    </div>
 
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="text-sm font-medium">Source</div>
-                        <div className="text-sm"><button onClick={() => setFilterSource([])} className="text-blue-600">Clear</button></div>
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="text-sm font-medium">Source</div>
+                          <div className="text-sm"><button onClick={() => setFilterSource([])} className="text-blue-600">Clear</button></div>
+                        </div>
+                        <MultiSelectDropdown items={sourcesList} selected={filterSource} onChange={setFilterSource} placeholder="All Source" />
                       </div>
-                      <MultiSelectDropdown items={sourcesList} selected={filterSource} onChange={setFilterSource} placeholder="All Source" />
-                    </div>
 
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="text-sm font-medium">Full name</div>
-                        <div className="text-sm"><button onClick={() => setFilterFullName([])} className="text-blue-600">Clear</button></div>
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="text-sm font-medium">Full name</div>
+                          <div className="text-sm"><button onClick={() => setFilterFullName([])} className="text-blue-600">Clear</button></div>
+                        </div>
+                        <MultiSelectDropdown items={fullNamesList} selected={filterFullName} onChange={setFilterFullName} placeholder="All Full name" />
                       </div>
-                      <MultiSelectDropdown items={fullNamesList} selected={filterFullName} onChange={setFilterFullName} placeholder="All Full name" />
-                    </div>
 
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="text-sm font-medium">Email</div>
-                        <div className="text-sm"><button onClick={() => setFilterEmail([])} className="text-blue-600">Clear</button></div>
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="text-sm font-medium">Email</div>
+                          <div className="text-sm"><button onClick={() => setFilterEmail([])} className="text-blue-600">Clear</button></div>
+                        </div>
+                        <MultiSelectDropdown items={emailsList} selected={filterEmail} onChange={setFilterEmail} placeholder="All Email" />
                       </div>
-                      <MultiSelectDropdown items={emailsList} selected={filterEmail} onChange={setFilterEmail} placeholder="All Email" />
-                    </div>
 
-                    <div className="col-span-3 mt-3">
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="text-sm font-medium">Status</div>
-                        <div className="text-sm"><button onClick={() => setFilterStatus([])} className="text-blue-600">Clear</button></div>
+                      <div className="col-span-3 mt-3">
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="text-sm font-medium">Status</div>
+                          <div className="text-sm"><button onClick={() => setFilterStatus([])} className="text-blue-600">Clear</button></div>
+                        </div>
+                        <MultiSelectDropdown items={statusList} selected={filterStatus} onChange={setFilterStatus} placeholder="All Status" />
                       </div>
-                      <MultiSelectDropdown items={statusList} selected={filterStatus} onChange={setFilterStatus} placeholder="All Status" />
                     </div>
                   </div>
-                </div>
 
-                <div className="space-y-4">
                   {filteredResponses.length === 0 && <div className="text-sm text-gray-500">No candidates yet.</div>}
                   {filteredResponses.map(resp => {
                     const opening = openings.find(o => o.id === resp.openingId) || {};
-                    // determine candidate name and email (various possible places)
                     const candidateName = resp.fullName || resp.answers?.['Full name'] || resp.answers?.['full name'] || resp.answers?.name || resp.answers?.fullname || 'Candidate';
                     const candidateEmail = resp.email || resp.answers?.email || resp.answers?.['Email address'] || '';
                     return (
                       <div key={resp.id} className="p-4 border rounded flex justify-between items-start">
-                        <div className="flex-1">
-                          {/* Name (top) with email in parentheses as requested */}
+                        <div>
+                          {/* Name at top, email in parentheses */}
                           <div className="font-semibold">{candidateName} {candidateEmail ? <span className="text-sm text-gray-500">({candidateEmail})</span> : null}</div>
 
-                          {/* Opening title + location inline (same style as other secondary info) */}
+                          {/* Opening name and location inline (secondary info style) */}
                           <div className="text-xs text-gray-500 mt-1">
                             {opening.title || resp.openingId} • {opening.location || ''}
                           </div>
 
-                          {/* Applied at (where response id used to be). Keep same style as earlier "Applied for" */}
+                          {/* Applied at (was previously response id location) */}
                           <div className="text-xs text-gray-500 mt-1">
                             Applied at: {new Date(resp.createdAt).toLocaleString()}
                           </div>
@@ -987,17 +1027,8 @@ export default function App() {
                           <div className="text-xs text-gray-500 mt-2">Source: {resp.source}</div>
 
                           {/* Resume + response id beside it separated by | */}
-                          {resp.resumeLink && (
-                            <div className="text-xs mt-2">
-                              <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">Resume</a>
-                              <span className="mx-2 text-gray-400">|</span>
-                              <span className="text-gray-400">{resp.id}</span>
-                            </div>
-                          )}
-                          {/* if no resume, still show response id */}
-                          {!resp.resumeLink && (
-                            <div className="text-xs mt-2 text-gray-400">{resp.id}</div>
-                          )}
+                          {resp.resumeLink && <div className="text-xs mt-2"><a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">Resume</a> <span className="mx-2 text-gray-400">|</span> <span className="text-gray-400">{resp.id}</span></div>}
+                          {!resp.resumeLink && <div className="text-xs mt-2 text-gray-400">{resp.id}</div>}
                         </div>
 
                         <div className="flex flex-col items-end gap-2">
@@ -1149,6 +1180,7 @@ export default function App() {
                   <div className="text-xs text-gray-500">Edit questions, save, publish, or share links. Core fields are mandatory and cannot be removed.</div>
                 </div>
                 <div className="flex gap-2">
+                  {/* Custom question is now only available inside form editor modal */}
                   <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
                   <button onClick={() => handleSaveForm(op.id)} className="px-3 py-1 border rounded">Save</button>
                   <button onClick={() => handlePublishForm(op.id)} className="px-3 py-1 bg-green-600 text-white rounded">Publish</button>
@@ -1241,7 +1273,7 @@ export default function App() {
         );
       })()}
 
-      {/* Custom Question Modal: ensure it sits above Form Editor modal */}
+      {/* Custom Question Modal: ensure it sits above Form Editor modal by giving a very high inline zIndex */}
       {showCustomModal && (
         <div style={{ zIndex: 2000 }} className="fixed inset-0 bg-black/30 flex items-center justify-center">
           <div className="bg-white rounded-lg p-6 w-[560px] shadow-xl">
@@ -1299,7 +1331,112 @@ export default function App() {
                     );
                   })()}
 
-                  {/* other dynamic fields omitted for brevity in public form rendering, original logic retained */}
+                  {(() => {
+                    const q = findQ("profile") || findQ("picture") || findQ("photo") || findQ("profile picture");
+                    if (!q) return null;
+                    return (
+                      <div>
+                        <label className="block text-sm font-medium mb-2">Profile picture</label>
+                        <label className="block border-2 border-dashed border-gray-300 rounded-lg p-4 text-center cursor-pointer hover:border-blue-400 transition-colors">
+                          <div className="flex items-center gap-4 justify-center">
+                            <div className="w-14 h-14 rounded-full bg-gray-100 flex items-center justify-center text-xl">📷</div>
+                            <div className="text-left">
+                              <div className="text-sm">Drop your file here or <span className="text-blue-600 underline">Select a file</span></div>
+                              <div className="text-xs text-gray-400 mt-1">Only JPG, PNG are allowed — up to 2MB</div>
+                            </div>
+                          </div>
+                          <input type="file" name="resume" className="hidden" />
+                        </label>
+                      </div>
+                    );
+                  })()}
+
+                  <div className="grid grid-cols-2 gap-4">
+                    {(() => {
+                      const q1 = findQ("birth") || findQ("date");
+                      const q2 = findQ("country");
+                      return (
+                        <>
+                          <div>
+                            {q1 && (
+                              <>
+                                <label className="block text-sm font-medium mb-2">{q1.label}{q1.required ? " *" : ""}</label>
+                                <input type="date" name={q1.id} className="w-full border p-2 rounded-md" />
+                              </>
+                            )}
+                          </div>
+                          <div>
+                            {q2 && (
+                              <>
+                                <label className="block text-sm font-medium mb-2">{q2.label}{q2.required ? " *" : ""}</label>
+                                <select name={q2.id} className="w-full border p-2 rounded-md">
+                                  <option>India</option><option>United States</option><option>United Kingdom</option><option>Australia</option>
+                                </select>
+                              </>
+                            )}
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  {(() => {
+                    const q = findQ("mother");
+                    if (!q) return null;
+                    return (
+                      <div>
+                        <label className="block text-sm font-medium mb-2">{q.label}{q.required ? " *" : ""}</label>
+                        <input name={q.id} className="w-full border p-2 rounded-md" />
+                      </div>
+                    );
+                  })()}
+
+                  <div className="grid grid-cols-2 gap-4">
+                    {(() => {
+                      const items = [
+                        { key: "gender", labelHint: "gender" },
+                        { key: "color", labelHint: "color" },
+                        { key: "marital", labelHint: "marital" },
+                        { key: "special", labelHint: "special needs" },
+                        { key: "state", labelHint: "state" },
+                        { key: "city", labelHint: "city" }
+                      ];
+                      return items.map(it => {
+                        const q = findQ(it.labelHint);
+                        return q ? (
+                          <div key={it.key}>
+                            <label className="block text-sm font-medium mb-2">{q.label}{q.required ? " *" : ""}</label>
+                            {q.type === "dropdown" || q.type === "radio" ? (
+                              <select name={q.id} className="w-full border p-2 rounded-md">{(q.options || []).map(opt => <option key={opt}>{opt}</option>)}</select>
+                            ) : (
+                              <input name={q.id} className="w-full border p-2 rounded-md" />
+                            )}
+                          </div>
+                        ) : null;
+                      });
+                    })()}
+                  </div>
+
+                  {currentSchema.filter(q => {
+                    const lower = (q.label || "").toLowerCase();
+                    return !["name","full name","profile","picture","photo","birth","date","country","mother","gender","color","race","marital","special needs","state","city"].some(k => lower.includes(k));
+                  }).map(q => (
+                    <div key={q.id}>
+                      <label className="block text-sm font-medium mb-2">{q.label}{q.required ? " *" : ""}</label>
+                      {q.type === "long_text" ? (
+                        <textarea name={q.id} className="w-full border p-2 rounded-md" />
+                      ) : q.type === "dropdown" || q.type === "radio" ? (
+                        <select name={q.id} className="w-full border p-2 rounded-md">{(q.options || []).map(opt => <option key={opt}>{opt}</option>)}</select>
+                      ) : q.type === "checkboxes" ? (
+                        (q.options || []).map(opt => <div key={opt}><label className="inline-flex items-center"><input name={q.id} value={opt} type="checkbox" className="mr-2" /> {opt}</label></div>)
+                      ) : q.type === "file" ? (
+                        <input name={q.id} type="file" />
+                      ) : (
+                        <input name={q.id} className="w-full border p-2 rounded-md" />
+                      )}
+                    </div>
+                  ))}
+
                   <div className="flex items-center justify-between mt-4">
                     <button type="button" onClick={() => setPublicView(null)} className="px-4 py-2 border rounded-md text-sm">← BACK</button>
                     <button type="submit" className="px-6 py-2 bg-blue-600 text-white rounded-md text-sm">NEXT →</button>
