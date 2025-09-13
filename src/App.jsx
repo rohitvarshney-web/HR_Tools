@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { v4 as uuidv4 } from "uuid";
 
 /* Small inline icons component */
@@ -10,6 +10,9 @@ const Icon = ({ name, className = "w-5 h-5 inline-block" }) => {
     ),
     plus: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 5v14M5 12h14"/></svg>),
     trash: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 7h12M9 7V4h6v3m-7 4v9m4-9v9"/></svg>),
+    chevronDown: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 9l6 6 6-6"/></svg>),
+    close: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 6l12 12M6 18L18 6"/></svg>),
+    search: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z"/></svg>)
   };
   return icons[name] || null;
 };
@@ -73,6 +76,75 @@ function LoginPage({ backendUrl }) {
         </button>
         <div className="mt-4 text-xs text-gray-500">Reach out to rohit.varshney@stampmyvisa.com, if you are unable to sign-in.</div>
       </div>
+    </div>
+  );
+}
+
+/* -------------------------
+   Reusable MultiSelect Dropdown Component
+   - items: array of strings
+   - selectedSet: Set
+   - onToggle(value) : toggle a single item
+   - onClear(): clear group
+   - label: string
+   Adds: search input inside dropdown
+------------------------- */
+function MultiSelectDropdown({ label, items = [], selectedSet, onToggle, onClear }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const ref = useRef(null);
+
+  useEffect(() => {
+    function onDocClick(e) {
+      if (!ref.current) return;
+      if (!ref.current.contains(e.target)) {
+        setOpen(false);
+        setQuery("");
+      }
+    }
+    document.addEventListener('click', onDocClick);
+    return () => document.removeEventListener('click', onDocClick);
+  }, []);
+
+  useEffect(() => {
+    if (!open) setQuery("");
+  }, [open]);
+
+  const selectedCount = selectedSet ? selectedSet.size : 0;
+  const displayLabel = selectedCount === 0 ? `All ${label}` : `${selectedCount} selected`;
+
+  // filter items by query (case-insensitive)
+  const filtered = query.trim() === "" ? items : items.filter(it => (it || "").toLowerCase().includes(query.trim().toLowerCase()));
+
+  return (
+    <div className="mb-3 relative" ref={ref}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="font-medium text-sm">{label}</div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => { onClear && onClear(); setQuery(""); }} className="text-xs text-blue-600 underline">Clear</button>
+          <button onClick={() => setOpen(s => !s)} className="flex items-center gap-2 px-3 py-1 border rounded text-sm">
+            <span>{displayLabel}</span>
+            <span className="ml-1">{<Icon name="chevronDown" className="w-4 h-4" />}</span>
+          </button>
+        </div>
+      </div>
+
+      {open && (
+        <div className="border rounded max-h-60 overflow-auto p-2 bg-white shadow-sm z-50 absolute w-64">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="text-gray-400">{<Icon name="search" className="w-4 h-4" />}</div>
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${label}`} className="w-full p-1 text-sm border rounded" />
+            <button onClick={() => { setQuery(""); }} className="text-xs text-gray-500">Clear</button>
+          </div>
+
+          {filtered.length === 0 ? <div className="text-xs text-gray-400">— none —</div> : filtered.map(it => (
+            <label key={it} className="flex items-center gap-2 block px-2 py-1 hover:bg-gray-50 rounded cursor-pointer">
+              <input type="checkbox" checked={selectedSet.has(it)} onChange={() => onToggle(it)} />
+              <span className="ml-2 text-sm">{it}</span>
+            </label>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -639,7 +711,7 @@ export default function App() {
   // Build unique lists for filter options (computed each render)
   const openingTitlesSet = new Set(openings.map(o => o.title || o.id));
   const openingsByTitle = Array.from(openingTitlesSet).sort();
-  const locations = Array.from(new Set(openings.map(o => o.location || '').filter(Boolean))).sort();
+  const locationsList = Array.from(new Set(openings.map(o => o.location || '').filter(Boolean))).sort();
   const departments = Array.from(new Set(openings.map(o => o.department || '').filter(Boolean))).sort();
   const sources = Array.from(new Set(responses.map(r => r.source || 'unknown').filter(Boolean))).sort();
   const names = Array.from(new Set(responses.map(r => {
@@ -878,113 +950,59 @@ export default function App() {
                 </div>
               </div>
 
-              <aside className="bg-white rounded-lg p-6 shadow-sm">
+              <aside className="bg-white rounded-lg p-6 shadow-sm relative">
                 <h3 className="font-semibold mb-3">Filters</h3>
 
-                <div className="text-sm text-gray-600 mb-3">Select one or more options in each group. Filters combine (AND).</div>
+                <div className="text-sm text-gray-600 mb-3">Select one or more options in each dropdown. Filters combine (AND).</div>
 
                 <div className="space-y-4 text-sm">
-                  {/* Opening (job title) */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="font-medium">Opening</div>
-                      <button onClick={() => clearFilterGroup('openings')} className="text-xs text-blue-600 underline">Clear</button>
-                    </div>
-                    <div className="max-h-40 overflow-auto border rounded p-2">
-                      {openingsByTitle.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
-                      {openingsByTitle.map(title => (
-                        <label key={title} className="flex items-center gap-2 block">
-                          <input type="checkbox" checked={filters.openings.has(title)} onChange={() => toggleFilter('openings', title)} />
-                          <span className="ml-1">{title}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
+                  <MultiSelectDropdown
+                    label="Opening"
+                    items={openingsByTitle}
+                    selectedSet={filters.openings}
+                    onToggle={(v) => toggleFilter('openings', v)}
+                    onClear={() => clearFilterGroup('openings')}
+                  />
 
-                  {/* Location */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="font-medium">Location</div>
-                      <button onClick={() => clearFilterGroup('locations')} className="text-xs text-blue-600 underline">Clear</button>
-                    </div>
-                    <div className="max-h-32 overflow-auto border rounded p-2">
-                      {locations.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
-                      {locations.map(loc => (
-                        <label key={loc} className="flex items-center gap-2 block">
-                          <input type="checkbox" checked={filters.locations.has(loc)} onChange={() => toggleFilter('locations', loc)} />
-                          <span className="ml-1">{loc}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
+                  <MultiSelectDropdown
+                    label="Location"
+                    items={locationsList}
+                    selectedSet={filters.locations}
+                    onToggle={(v) => toggleFilter('locations', v)}
+                    onClear={() => clearFilterGroup('locations')}
+                  />
 
-                  {/* Department */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="font-medium">Department</div>
-                      <button onClick={() => clearFilterGroup('departments')} className="text-xs text-blue-600 underline">Clear</button>
-                    </div>
-                    <div className="max-h-28 overflow-auto border rounded p-2">
-                      {departments.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
-                      {departments.map(d => (
-                        <label key={d} className="flex items-center gap-2 block">
-                          <input type="checkbox" checked={filters.departments.has(d)} onChange={() => toggleFilter('departments', d)} />
-                          <span className="ml-1">{d}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
+                  <MultiSelectDropdown
+                    label="Department"
+                    items={departments}
+                    selectedSet={filters.departments}
+                    onToggle={(v) => toggleFilter('departments', v)}
+                    onClear={() => clearFilterGroup('departments')}
+                  />
 
-                  {/* Source */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="font-medium">Source</div>
-                      <button onClick={() => clearFilterGroup('sources')} className="text-xs text-blue-600 underline">Clear</button>
-                    </div>
-                    <div className="max-h-28 overflow-auto border rounded p-2">
-                      {sources.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
-                      {sources.map(s => (
-                        <label key={s} className="flex items-center gap-2 block">
-                          <input type="checkbox" checked={filters.sources.has(s)} onChange={() => toggleFilter('sources', s)} />
-                          <span className="ml-1">{s}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
+                  <MultiSelectDropdown
+                    label="Source"
+                    items={sources}
+                    selectedSet={filters.sources}
+                    onToggle={(v) => toggleFilter('sources', v)}
+                    onClear={() => clearFilterGroup('sources')}
+                  />
 
-                  {/* Full name */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="font-medium">Full name</div>
-                      <button onClick={() => clearFilterGroup('names')} className="text-xs text-blue-600 underline">Clear</button>
-                    </div>
-                    <div className="max-h-40 overflow-auto border rounded p-2">
-                      {names.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
-                      {names.map(n => (
-                        <label key={n} className="flex items-center gap-2 block">
-                          <input type="checkbox" checked={filters.names.has(n)} onChange={() => toggleFilter('names', n)} />
-                          <span className="ml-1">{n}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
+                  <MultiSelectDropdown
+                    label="Full name"
+                    items={names}
+                    selectedSet={filters.names}
+                    onToggle={(v) => toggleFilter('names', v)}
+                    onClear={() => clearFilterGroup('names')}
+                  />
 
-                  {/* Email */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="font-medium">Email</div>
-                      <button onClick={() => clearFilterGroup('emails')} className="text-xs text-blue-600 underline">Clear</button>
-                    </div>
-                    <div className="max-h-40 overflow-auto border rounded p-2 break-all">
-                      {emails.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
-                      {emails.map(em => (
-                        <label key={em} className="flex items-center gap-2 block">
-                          <input type="checkbox" checked={filters.emails.has(em)} onChange={() => toggleFilter('emails', em)} />
-                          <span className="ml-1">{em}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
+                  <MultiSelectDropdown
+                    label="Email"
+                    items={emails}
+                    selectedSet={filters.emails}
+                    onToggle={(v) => toggleFilter('emails', v)}
+                    onClear={() => clearFilterGroup('emails')}
+                  />
                 </div>
 
               </aside>
