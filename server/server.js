@@ -885,6 +885,7 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
       id: `resp_${Date.now()}`,
       openingId,
       openingTitle,
+      location: openingLocation || null,   // <--- NEW
       source: src,
       fullName: extractedFullName || null,
       email: extractedEmail || null,
@@ -903,6 +904,7 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
       new Date().toISOString(),
       openingId,
       openingTitle || '',
+      openingLocation || '',   // <--- NEW column for location
       src,
       resp.fullName || '',
       resp.email || '',
