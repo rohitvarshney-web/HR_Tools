@@ -973,6 +973,7 @@ export default function App() {
                     <div />
                   </div>
                   <MultiSelectDropdown
+                    Label="Opening"
                     options={openingOptions}
                     selected={filterOpenings}
                     onChange={setFilterOpenings}
