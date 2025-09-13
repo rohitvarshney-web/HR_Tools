@@ -978,21 +978,28 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* Right column: status selector and applied timestamp at bottom */}
-                        <div className="flex flex-col justify-between items-end" style={{ minWidth: 160 }}>
-                          <div className="text-xs text-gray-500">Status</div>
-                          <select value={resp.status || 'Applied'} onChange={(e) => updateCandidateStatus(resp.id, e.target.value)} className="border p-2 rounded mb-2">
-                            <option>Applied</option>
-                            <option>Screening</option>
-                            <option>Interview</option>
-                            <option>Offer</option>
-                            <option>Hired</option>
-                            <option>Rejected</option>
-                          </select>
+                       {/* Right column: status selector at top, applied timestamp fixed at bottom-right */}
+<div className="flex flex-col justify-between items-end" style={{ minWidth: 180 }}>
+  <div>
+    <div className="text-xs text-gray-500">Status</div>
+    <select
+      value={resp.status || 'Applied'}
+      onChange={(e) => updateCandidateStatus(resp.id, e.target.value)}
+      className="border p-2 rounded"
+    >
+      <option>Applied</option>
+      <option>Screening</option>
+      <option>Interview</option>
+      <option>Offer</option>
+      <option>Hired</option>
+      <option>Rejected</option>
+    </select>
+  </div>
 
-                          {/* Applied at — bottom-right corner (secondary small text) */}
-                          <div className="text-sm text-gray-500">Applied at: {new Date(resp.createdAt).toLocaleString()}</div>
-                        </div>
+  <div className="text-sm text-gray-500 mt-4 self-end">
+    Applied at: {new Date(resp.createdAt).toLocaleString()}
+  </div>
+</div>
                       </div>
                     );
                   })}
