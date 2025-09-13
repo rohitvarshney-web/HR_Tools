@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { v4 as uuidv4 } from "uuid";
 
 /* Small inline icons component */
@@ -10,8 +10,7 @@ const Icon = ({ name, className = "w-5 h-5 inline-block" }) => {
     ),
     plus: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 5v14M5 12h14"/></svg>),
     trash: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 7h12M9 7V4h6v3m-7 4v9m4-9v9"/></svg>),
-    chevron: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 9l6 6 6-6"/></svg>),
-    search: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M21 21l-4.35-4.35M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15z"/></svg>)
+    chevron: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 9l6 6 6-6"/></svg>)
   };
   return icons[name] || null;
 };
@@ -55,75 +54,76 @@ const QUESTION_TYPES = [
 ];
 
 /* -------------------------
-   Lightweight MultiSelectDropdown component
-   - label: string
-   - options: [{ value,label }]
-   - selected: array of values
-   - onChange: (newSelectedArray) => void
-   - placeholder: text
-   - searchEnabled: bool
-   ------------------------- */
-function MultiSelectDropdown({ label, options = [], selected = [], onChange, placeholder = 'Select', searchEnabled = true }) {
+   MultiSelectDropdown
+   - props:
+     label (string)
+     options: [{ value, label }]
+     selected: Set or array of values
+     onChange(selectedArray)
+     placeholder
+     searchEnabled (bool)
+*/
+function MultiSelectDropdown({ label, options = [], selected = [], onChange = () => {}, placeholder = "Select", searchEnabled = true }) {
   const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState('');
-  const ref = useRef(null);
+  const [query, setQuery] = useState("");
 
   useEffect(() => {
-    function onDoc(e) {
-      if (!ref.current) return;
-      if (!ref.current.contains(e.target)) setOpen(false);
+    function onDocClick(e) {
+      if (!e.target.closest || !e.target.closest('.msdd-root')) {
+        setOpen(false);
+      }
     }
-    document.addEventListener('click', onDoc);
-    return () => document.removeEventListener('click', onDoc);
+    document.addEventListener('click', onDocClick);
+    return () => document.removeEventListener('click', onDocClick);
   }, []);
 
-  const filtered = query.trim() === '' ? options : options.filter(o => (o.label || '').toLowerCase().includes(query.toLowerCase()));
+  const selectedSet = new Set(selected || []);
+
+  const filtered = useMemo(() => {
+    const q = (query || "").toLowerCase().trim();
+    if (!q) return options;
+    return options.filter(o => (o.label || "").toLowerCase().includes(q) || (o.value || "").toString().toLowerCase().includes(q));
+  }, [options, query]);
 
   function toggleValue(v) {
-    const copy = Array.isArray(selected) ? [...selected] : [];
-    const idx = copy.indexOf(v);
-    if (idx === -1) copy.push(v); else copy.splice(idx, 1);
-    if (onChange) onChange(copy);
-  }
-  function clearSelection() {
-    if (onChange) onChange([]);
+    const s = new Set(selectedSet);
+    if (s.has(v)) s.delete(v);
+    else s.add(v);
+    onChange(Array.from(s));
   }
 
-  const displayText = selected && selected.length ? `${selected.length} selected` : placeholder;
+  function clearAll() {
+    onChange([]);
+  }
 
   return (
-    <div className="relative" ref={ref}>
-      <div className="flex items-center justify-between mb-1">
+    <div className="relative msdd-root" style={{ minWidth: 220 }}>
+      <div className="flex items-center justify-between">
         <div className="text-sm font-medium">{label}</div>
-        <button type="button" onClick={(e) => { e.stopPropagation(); clearSelection(); }} className="text-sm text-blue-500">Clear</button>
+        <div className="text-sm">
+          <button type="button" onClick={clearAll} className="text-blue-600 hover:underline">Clear</button>
+        </div>
       </div>
 
-      <button type="button" onClick={() => setOpen(s => !s)} className="w-full text-left bg-white border rounded p-3 flex items-center justify-between">
-        <div className="text-sm text-gray-700">{displayText}</div>
-        <div className="ml-2">{<Icon name="chevron" />}</div>
+      <button type="button" onClick={() => setOpen(o => !o)} className="mt-2 w-full text-left px-4 py-3 border rounded bg-white flex items-center justify-between">
+        <div className="text-sm text-gray-700">{selected.length ? `${selected.length} selected` : placeholder}</div>
+        <div>{<Icon name="chevron" />}</div>
       </button>
 
       {open && (
-        <div className="absolute left-0 right-0 mt-2 bg-white border rounded shadow-md z-40 max-h-64 overflow-auto">
+        <div className="absolute right-0 left-0 z-50 mt-2 bg-white border rounded shadow-lg p-3 max-h-64 overflow-auto">
           {searchEnabled && (
-            <div className="p-2">
-              <div className="flex items-center gap-2 border rounded px-2 py-1">
-                <div className="text-gray-400">{<Icon name="search" className="w-4 h-4" />}</div>
-                <input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search..." className="w-full outline-none text-sm p-1" />
-              </div>
+            <div className="mb-2">
+              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search..." className="w-full border p-2 rounded text-sm" />
             </div>
           )}
-          <div className="divide-y">
-            {filtered.length === 0 ? (
-              <div className="p-3 text-sm text-gray-500">No results</div>
-            ) : (
-              filtered.map(opt => (
-                <label key={opt.value} className="flex items-center gap-2 p-3 hover:bg-gray-50 cursor-pointer">
-                  <input type="checkbox" checked={selected && selected.includes(opt.value)} onChange={() => toggleValue(opt.value)} />
-                  <div className="text-sm">{opt.label}</div>
-                </label>
-              ))
-            )}
+          <div className="space-y-2">
+            {filtered.length === 0 ? (<div className="text-xs text-gray-400">No results</div>) : filtered.map(opt => (
+              <label key={opt.value} className="flex items-center gap-2 cursor-pointer text-sm">
+                <input checked={selectedSet.has(opt.value)} onChange={() => toggleValue(opt.value)} type="checkbox" className="h-4 w-4" />
+                <span>{opt.label}</span>
+              </label>
+            ))}
           </div>
         </div>
       )}
@@ -163,40 +163,32 @@ export default function App() {
   const API = process.env.REACT_APP_API_URL || 'https://hr-tools-backend.onrender.com';
   const BACKEND = API;
 
-  console.log('Using API endpoint:', API);
-
   const [openings, setOpenings] = useState([]);
   const [activeTab, setActiveTab] = useState("overview");
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newOpening, setNewOpening] = useState({ title: "", location: "Delhi", department: "", preferredSources: [], durationMins: 30 });
-  const [forms, setForms] = useState({}); // keyed by openingId: { questions: [...], meta: {...} }
+  const [forms, setForms] = useState({});
   const [responses, setResponses] = useState([]);
-
-  // Question bank (server-backed)
   const [questionBank, setQuestionBank] = useState([]);
 
-  // auth / user
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
 
-  // custom question modal (only shown from inside form modal)
+  // Custom question modal + form editor states
   const [showCustomModal, setShowCustomModal] = useState(false);
   const [customOpeningId, setCustomOpeningId] = useState(null);
   const [customQ, setCustomQ] = useState({ label: "", type: "short_text", required: false, optionsText: "" });
 
-  // edit opening
   const [showEdit, setShowEdit] = useState(false);
   const [editingOpening, setEditingOpening] = useState(null);
 
-  // public form modal
   const [publicView, setPublicView] = useState(null);
 
-  // Form Editor modal per opening
   const [showFormModal, setShowFormModal] = useState(false);
   const [formModalOpeningId, setFormModalOpeningId] = useState(null);
 
-  // Filters state (multi-select arrays)
+  // Filters state (all arrays of selected values)
   const [filterOpenings, setFilterOpenings] = useState([]);
   const [filterLocations, setFilterLocations] = useState([]);
   const [filterDepartments, setFilterDepartments] = useState([]);
@@ -269,23 +261,18 @@ export default function App() {
      Helper: ensure core fields exist in a form object (mutating copy)
   ------------------------- */
   function ensureCoreFieldsInForm(formObj) {
-    // formObj shape: { questions: [...], meta: {...} }
-    // ensure required meta.coreFields exists
     const existingIds = new Set((formObj.questions || []).map(q => q.id));
     const coreOrder = [CORE_QUESTIONS.fullName, CORE_QUESTIONS.email, CORE_QUESTIONS.phone, CORE_QUESTIONS.resume];
-    // Insert any missing core question at start (preserve order)
     const missing = coreOrder.filter(cq => !existingIds.has(cq.id)).map(cq => ({ ...cq }));
     if (missing.length) {
       formObj.questions = [...missing, ...(formObj.questions || [])];
     }
-    // Always mark required
     formObj.questions = (formObj.questions || []).map(q => {
       if (PROTECTED_IDS.has(q.id)) {
         return { ...q, required: true };
       }
       return q;
     });
-    // Ensure meta.coreFields mapping
     formObj.meta = formObj.meta || {};
     formObj.meta.coreFields = formObj.meta.coreFields || {
       fullNameId: CORE_QUESTIONS.fullName.id,
@@ -304,22 +291,17 @@ export default function App() {
       if (!localStorage.getItem('token')) return;
       const rows = await apiFetch('/api/openings');
       setOpenings(rows);
-    } catch (err) {
-      console.error('loadOpenings', err);
-    }
+    } catch (err) { console.error('loadOpenings', err); }
   }
 
   async function loadResponses() {
     try {
       if (!localStorage.getItem('token')) return;
       const rows = await apiFetch('/api/responses');
-      setResponses(rows);
-    } catch (err) {
-      console.error('loadResponses', err);
-    }
+      setResponses(rows || []);
+    } catch (err) { console.error('loadResponses', err); }
   }
 
-  // load forms from server and map them into forms state keyed by openingId
   async function loadForms() {
     try {
       if (!localStorage.getItem('token')) return;
@@ -329,7 +311,6 @@ export default function App() {
         const obj = { questions: (f.data && f.data.questions) || [], meta: (f.data && f.data.meta) || null, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at, openingId: f.openingId };
         map[f.openingId] = ensureCoreFieldsInForm(obj);
       });
-      // For openings without a saved server form, keep an initialized local form with core fields
       (openings || []).forEach(op => {
         if (!map[op.id]) {
           const base = { questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } };
@@ -337,20 +318,15 @@ export default function App() {
         }
       });
       setForms(map);
-    } catch (err) {
-      console.error('loadForms', err);
-    }
+    } catch (err) { console.error('loadForms', err); }
   }
 
-  // load question bank
   async function loadQuestionBank() {
     try {
       if (!localStorage.getItem('token')) return;
       const rows = await apiFetch('/api/questions');
       setQuestionBank(rows || []);
-    } catch (err) {
-      console.error('loadQuestionBank', err);
-    }
+    } catch (err) { console.error('loadQuestionBank', err); }
   }
 
   /* -------------------------
@@ -372,9 +348,8 @@ export default function App() {
     };
 
     try {
-      const token = localStorage.getItem('token');
       let created;
-      if (!token) {
+      if (!localStorage.getItem('token')) {
         created = { id: `op_${Date.now()}`, ...payload, createdAt: new Date().toISOString() };
         setOpenings(s => [created, ...s]);
       } else {
@@ -382,7 +357,6 @@ export default function App() {
         created = { id: res.id, ...payload, createdAt: res.createdAt || new Date().toISOString() };
         setOpenings(s => [created, ...s]);
       }
-      // initialize local form for this opening with core fields + small template
       setForms(f => ({ ...f, [created.id]: ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } }) }));
       setShowCreate(false);
     } catch (err) {
@@ -399,7 +373,6 @@ export default function App() {
   function handleSaveEdit(e) {
     e.preventDefault();
     setOpenings((s) => s.map(op => op.id === editingOpening.id ? editingOpening : op));
-    // Persist edit if authenticated
     if (localStorage.getItem('token')) {
       apiFetch(`/api/openings/${editingOpening.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editingOpening) })
         .catch(err => console.error('Failed to persist opening edit', err));
@@ -413,7 +386,6 @@ export default function App() {
       if (localStorage.getItem('token')) {
         await apiFetch(`/api/openings/${id}`, { method: 'DELETE' });
         setOpenings(s => s.filter(op => op.id !== id));
-        // refresh forms map
         await loadForms();
       } else {
         setOpenings(s => s.filter(op => op.id !== id));
@@ -424,21 +396,13 @@ export default function App() {
     }
   }
 
-  // addQuestion respects server-provided question IDs (if present) and blocks duplicates of protected ids
   function addQuestion(openingId, q) {
     const question = { ...q, id: q.id || uuidv4() };
     setForms((f) => {
       const existing = f[openingId] || { questions: [], meta: null };
       const exists = (existing.questions || []).some(x => x.id === question.id);
-      if (exists) {
-        // already present — ignore
-        return f;
-      }
-      // don't allow adding protected question duplicates (core questions are already present)
-      if (PROTECTED_IDS.has(question.id)) {
-        // if not present, ensureCoreFieldsInForm will add them; but if already present or protected, ignore
-        return { ...f };
-      }
+      if (exists) return f;
+      if (PROTECTED_IDS.has(question.id)) return { ...f };
       const newQuestions = [...(existing.questions || []), question];
       return { ...f, [openingId]: { ...existing, questions: newQuestions } };
     });
@@ -465,14 +429,12 @@ export default function App() {
     });
   }
 
-  // open custom modal (only used inside form editor modal)
   function openCustomModalFor(openingId) {
     setCustomOpeningId(openingId);
     setCustomQ({ label: "", type: "short_text", required: false, optionsText: "" });
     setShowCustomModal(true);
   }
 
-  // Create custom question; persist to server bank if signed in, then add to local form
   async function handleAddCustomQuestion(e) {
     e.preventDefault();
     const options = customQ.optionsText.split("\n").map(s => s.trim()).filter(Boolean);
@@ -493,36 +455,27 @@ export default function App() {
     }
   }
 
-  // Save form without publishing (creates/updates server form and sets meta.coreFields)
   async function handleSaveForm(openingId) {
     const opening = openings.find(o => o.id === openingId);
     if (!opening) return;
-
-    // ensure core present
     const current = forms[openingId] || { questions: [] };
     const ensured = ensureCoreFieldsInForm({ questions: (current.questions || []).map(q => ({ ...q })), meta: { ...(current.meta || {}) } });
-
     const questionsToSave = ensured.questions;
     const meta = ensured.meta || {};
-    // persist to server
     try {
       if (!localStorage.getItem('token')) {
-        // store locally only
         setForms(f => ({ ...f, [openingId]: { questions: questionsToSave, meta } }));
         alert('Not signed in — changes saved locally only.');
         return;
       }
-
       const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
       const serverForm = (serverForms && serverForms.length) ? serverForms[0] : null;
       const payload = { openingId, data: { questions: questionsToSave, meta } };
-
       if (serverForm) {
         await apiFetch(`/api/forms/${serverForm.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       } else {
         await apiFetch(`/api/forms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       }
-
       setForms(f => ({ ...f, [openingId]: { questions: questionsToSave, meta } }));
       alert('Form saved successfully.');
       await loadForms();
@@ -532,7 +485,6 @@ export default function App() {
     }
   }
 
-  // Publish form (generates share links + persists)
   async function handlePublishForm(openingId) {
     const opening = openings.find(o => o.id === openingId);
     if (!opening) return;
@@ -544,14 +496,12 @@ export default function App() {
     });
     const generic = `${window.location.origin}/apply/${formId}?opening=${encodeURIComponent(openingId)}`;
 
-    // ensure core and meta
     const current = forms[openingId] || { questions: [] };
     const ensured = ensureCoreFieldsInForm({ questions: (current.questions || []).map(q => ({ ...q })), meta: (current.meta || {}) });
 
     const questionsToPublish = ensured.questions;
     const meta = { ...(ensured.meta || {}), formId, isPublished: true, publishedAt: new Date().toISOString(), shareLinks, genericLink: generic };
 
-    // optimistic local update
     setForms((f) => ({ ...f, [openingId]: { questions: questionsToPublish, meta } }));
 
     try {
@@ -584,7 +534,6 @@ export default function App() {
     setPublicView({ openingId, source, submitted: false });
   }
 
-  // Delete single form
   async function deleteFormByOpening(openingId) {
     if (!confirm('Delete the server-saved form for this opening?')) return;
     try {
@@ -611,7 +560,6 @@ export default function App() {
 
   // Open/close Form Editor modal
   function openFormModal(openingId) {
-    // ensure the opening has a local form in state (with core fields)
     setForms((f) => {
       const copy = { ...f };
       if (!copy[openingId]) {
@@ -629,7 +577,6 @@ export default function App() {
     setFormModalOpeningId(null);
   }
 
-  // Submit public form (unchanged)
   async function handlePublicSubmit(e) {
     e.preventDefault();
     const formEl = e.target;
@@ -682,8 +629,6 @@ export default function App() {
   /* -------------------------
      Hiring management helpers
   ------------------------- */
-
-  // Update candidate status
   async function updateCandidateStatus(responseId, newStatus) {
     try {
       setResponses(prev => prev.map(r => r.id === responseId ? { ...r, status: newStatus } : r));
@@ -706,58 +651,105 @@ export default function App() {
   }
 
   /* -------------------------
-     Build filter option lists
+     Derived filter options from data
   ------------------------- */
-  const openingOptions = (openings || []).map(o => ({ value: o.id, label: o.title || o.id }));
-  const locationOptions = Array.from(new Set((openings || []).map(o => o.location || ''))).filter(Boolean).map(l => ({ value: l, label: l }));
-  const departmentOptions = Array.from(new Set((openings || []).map(o => o.department || ''))).filter(Boolean).map(d => ({ value: d, label: d }));
-  const sourceOptions = Array.from(new Set((responses || []).map(r => r.source || 'unknown'))).filter(Boolean).map(s => ({ value: s, label: s }));
-  const nameOptions = Array.from(new Set((responses || []).map(r => (r.fullName || r.answers?.['Full name'] || r.answers?.name || '').trim()).filter(Boolean))).map(n => ({ value: n, label: n }));
-  const emailOptions = Array.from(new Set((responses || []).map(r => (r.email || r.answers?.email || r.answers?.['Email address'] || '').trim()).filter(Boolean))).map(e => ({ value: e, label: e }));
-  const statusOptions = Array.from(new Set((responses || []).map(r => r.status || 'Applied'))).map(s => ({ value: s, label: s }));
+  const openingOptions = useMemo(() => {
+    const uniq = [];
+    const seen = new Set();
+    openings.forEach(o => {
+      if (!seen.has(o.id)) { seen.add(o.id); uniq.push({ value: o.id, label: o.title || o.id }); }
+    });
+    return uniq;
+  }, [openings]);
+
+  const locationOptions = useMemo(() => {
+    const uniq = [];
+    const seen = new Set();
+    openings.forEach(o => {
+      const v = (o.location || 'Unknown');
+      if (!seen.has(v)) { seen.add(v); uniq.push({ value: v, label: v }); }
+    });
+    return uniq;
+  }, [openings]);
+
+  const departmentOptions = useMemo(() => {
+    const uniq = [];
+    const seen = new Set();
+    openings.forEach(o => {
+      const v = (o.department || 'General');
+      if (!seen.has(v)) { seen.add(v); uniq.push({ value: v, label: v }); }
+    });
+    return uniq;
+  }, [openings]);
+
+  const sourceOptions = useMemo(() => {
+    const uniq = [];
+    const seen = new Set();
+    responses.forEach(r => {
+      const v = (r.source || 'unknown');
+      if (!seen.has(v)) { seen.add(v); uniq.push({ value: v, label: v }); }
+    });
+    return uniq;
+  }, [responses]);
+
+  const nameOptions = useMemo(() => {
+    const uniq = [];
+    const seen = new Set();
+    responses.forEach(r => {
+      const v = (r.fullName || (r.answers && (r.answers.fullname || r.answers.name)) || '').trim();
+      if (!v) return;
+      if (!seen.has(v)) { seen.add(v); uniq.push({ value: v, label: v }); }
+    });
+    return uniq;
+  }, [responses]);
+
+  const emailOptions = useMemo(() => {
+    const uniq = [];
+    const seen = new Set();
+    responses.forEach(r => {
+      const v = (r.email || (r.answers && r.answers.email) || '').trim();
+      if (!v) return;
+      if (!seen.has(v)) { seen.add(v); uniq.push({ value: v, label: v }); }
+    });
+    return uniq;
+  }, [responses]);
+
+  const statusOptions = useMemo(() => {
+    const uniq = [];
+    const seen = new Set();
+    responses.forEach(r => {
+      const v = (r.status || 'Applied');
+      if (!seen.has(v)) { seen.add(v); uniq.push({ value: v, label: v }); }
+    });
+    return uniq;
+  }, [responses]);
 
   /* -------------------------
-     Filtering logic: combine all selected filters (AND across categories, OR within category)
+     Apply filters to responses
   ------------------------- */
-  function applyFilters(rows) {
-    return rows.filter(r => {
-      // opening filter
-      if (filterOpenings && filterOpenings.length) {
-        if (!filterOpenings.includes(r.openingId)) return false;
-      }
-      // location filter (from opening)
-      if (filterLocations && filterLocations.length) {
-        const opening = openings.find(o => o.id === r.openingId) || {};
-        if (!filterLocations.includes(opening.location || '')) return false;
-      }
-      // department
-      if (filterDepartments && filterDepartments.length) {
-        const opening = openings.find(o => o.id === r.openingId) || {};
-        if (!filterDepartments.includes(opening.department || '')) return false;
-      }
-      // source
-      if (filterSources && filterSources.length) {
-        if (!filterSources.includes(r.source || 'unknown')) return false;
-      }
-      // full name
-      if (filterFullNames && filterFullNames.length) {
-        const nameMatch = (r.fullName || r.answers?.name || r.answers?.['Full name'] || '').trim();
-        if (!filterFullNames.includes(nameMatch)) return false;
-      }
-      // email
-      if (filterEmails && filterEmails.length) {
-        const emailMatch = (r.email || r.answers?.email || r.answers?.['Email address'] || '').trim();
-        if (!filterEmails.includes(emailMatch)) return false;
-      }
-      // status
-      if (filterStatus && filterStatus.length) {
-        if (!filterStatus.includes(r.status || 'Applied')) return false;
-      }
+  const filteredResponses = useMemo(() => {
+    return responses.filter(r => {
+      // Opening filter
+      if (filterOpenings.length > 0 && !filterOpenings.includes(r.openingId)) return false;
+      // Location filter -> find opening location
+      const op = openings.find(o => o.id === r.openingId) || {};
+      if (filterLocations.length > 0 && !filterLocations.includes((op.location || ''))) return false;
+      // Department
+      if (filterDepartments.length > 0 && !filterDepartments.includes((op.department || ''))) return false;
+      // Source
+      if (filterSources.length > 0 && !filterSources.includes((r.source || 'unknown'))) return false;
+      // Full name
+      const fullname = (r.fullName || (r.answers && (r.answers.fullname || r.answers.name)) || '').trim();
+      if (filterFullNames.length > 0 && !filterFullNames.includes(fullname)) return false;
+      // Email
+      const email = (r.email || (r.answers && r.answers.email) || '').trim();
+      if (filterEmails.length > 0 && !filterEmails.includes(email)) return false;
+      // Status
+      const status = (r.status || 'Applied');
+      if (filterStatus.length > 0 && !filterStatus.includes(status)) return false;
       return true;
     });
-  }
-
-  const filteredResponses = applyFilters(responses || []);
+  }, [responses, openings, filterOpenings, filterLocations, filterDepartments, filterSources, filterFullNames, filterEmails, filterStatus]);
 
   /* -------------------------
      Render gating
@@ -908,36 +900,49 @@ export default function App() {
             <h1 className="text-2xl font-semibold mb-6">Hiring</h1>
 
             <div className="grid grid-cols-3 gap-6">
+              {/* Main candidates column */}
               <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
+                {/* Filters row moved to top of this column? We have filters on right aside; keep a small heading */}
                 <h2 className="font-semibold mb-4">Candidates</h2>
 
                 <div className="space-y-4">
-                  {filteredResponses.length === 0 && <div className="text-sm text-gray-500">No candidates yet.</div>}
+                  {filteredResponses.length === 0 && <div className="text-sm text-gray-500">No candidates match the selected filters.</div>}
+
                   {filteredResponses.map(resp => {
                     const opening = openings.find(o => o.id === resp.openingId) || {};
-                    // candidate name resolution
-                    const candidateName = (resp.fullName || resp.answers?.['Full name'] || resp.answers?.name || '').trim() || 'Candidate';
-                    const candidateEmail = (resp.email || resp.answers?.email || resp.answers?.['Email address'] || '').trim() || '';
-
+                    const candidateName = resp.fullName || (resp.answers && (resp.answers.fullname || resp.answers.name)) || 'Candidate';
+                    const candidateEmail = (resp.email || (resp.answers && resp.answers.email) || '').trim();
                     return (
-                      <div key={resp.id} className="p-6 border rounded relative bg-white min-h-[140px]">
-                        <div className="flex justify-between">
-                          <div>
-                            {/* Name (large) */}
-                            <div className="text-2xl font-semibold">{candidateName}</div>
-                            {/* Email (secondary style, parentheses) */}
-                            {candidateEmail ? <div className="text-sm text-gray-500 mt-1">({candidateEmail})</div> : null}
-
-                            {/* Opening title and location (secondary style) */}
-                            <div className="text-sm text-gray-500 mt-4">{opening.title || resp.openingId} • {opening.location || ''}</div>
-
-                            {/* Source */}
+                      <div key={resp.id} className="p-6 border rounded relative bg-white min-h-[130px]">
+                        <div className="flex justify-between items-start">
+                          {/* Left column: name/email + opening */}
+                          <div style={{ minWidth: 0, maxWidth: 'calc(100% - 220px)' }}>
+                            <div className="font-semibold text-xl leading-tight">{candidateName}</div>
+                            {candidateEmail ? (
+                              <div className="text-sm text-gray-600 mt-1" style={{ textTransform: 'uppercase' }}>({candidateEmail})</div>
+                            ) : null}
+                            <div className="text-sm text-gray-500 mt-3">
+                              {opening.title || '—'} &nbsp;•&nbsp; {opening.location || ''}
+                            </div>
                             <div className="text-sm text-gray-500 mt-2">Source: {resp.source || 'unknown'}</div>
+
+                            {/* Bottom-left row: Resume and response id */}
+                            <div className="mt-4 text-sm">
+                              {resp.resumeLink ? (
+                                <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline mr-3">Resume</a>
+                              ) : null}
+                              <span className="text-gray-500">{resp.id}</span>
+                            </div>
                           </div>
 
-                          <div className="flex flex-col items-end gap-2">
-                            <div className="text-xs text-gray-500">Status</div>
-                            <select value={resp.status || 'Applied'} onChange={(e) => updateCandidateStatus(resp.id, e.target.value)} className="border p-2 rounded">
+                          {/* Right column: status selector (kept top-right) */}
+                          <div className="w-[200px] flex flex-col items-end">
+                            <div className="text-xs text-gray-500 mb-1">Status</div>
+                            <select
+                              value={resp.status || 'Applied'}
+                              onChange={(e) => updateCandidateStatus(resp.id, e.target.value)}
+                              className="border p-2 rounded"
+                            >
                               <option>Applied</option>
                               <option>Screening</option>
                               <option>Interview</option>
@@ -945,16 +950,7 @@ export default function App() {
                               <option>Hired</option>
                               <option>Rejected</option>
                             </select>
-                            <div className="text-xs text-gray-400 mt-1">{/* reserved for small ID if needed */}</div>
                           </div>
-                        </div>
-
-                        {/* Bottom-left: Resume link and response id (anchored) */}
-                        <div className="absolute left-6 bottom-4 text-sm">
-                          {resp.resumeLink ? (
-                            <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline mr-3">Resume</a>
-                          ) : null}
-                          <span className="text-gray-500">{resp.id}</span>
                         </div>
 
                         {/* Applied-at: anchored bottom-right */}
@@ -972,6 +968,10 @@ export default function App() {
                 <h3 className="font-semibold mb-4">Filters</h3>
 
                 <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-medium">Opening</div>
+                    <div />
+                  </div>
                   <MultiSelectDropdown
                     label="Opening"
                     options={openingOptions}
@@ -981,6 +981,10 @@ export default function App() {
                     searchEnabled={true}
                   />
 
+                  <div className="mt-4 flex items-center justify-between">
+                    <div className="text-sm font-medium">Location</div>
+                    <div />
+                  </div>
                   <MultiSelectDropdown
                     label="Location"
                     options={locationOptions}
@@ -990,6 +994,10 @@ export default function App() {
                     searchEnabled={true}
                   />
 
+                  <div className="mt-4 flex items-center justify-between">
+                    <div className="text-sm font-medium">Department</div>
+                    <div />
+                  </div>
                   <MultiSelectDropdown
                     label="Department"
                     options={departmentOptions}
@@ -999,6 +1007,10 @@ export default function App() {
                     searchEnabled={true}
                   />
 
+                  <div className="mt-4 flex items-center justify-between">
+                    <div className="text-sm font-medium">Source</div>
+                    <div />
+                  </div>
                   <MultiSelectDropdown
                     label="Source"
                     options={sourceOptions}
@@ -1008,6 +1020,10 @@ export default function App() {
                     searchEnabled={true}
                   />
 
+                  <div className="mt-4 flex items-center justify-between">
+                    <div className="text-sm font-medium">Full name</div>
+                    <div />
+                  </div>
                   <MultiSelectDropdown
                     label="Full name"
                     options={nameOptions}
@@ -1017,6 +1033,10 @@ export default function App() {
                     searchEnabled={true}
                   />
 
+                  <div className="mt-4 flex items-center justify-between">
+                    <div className="text-sm font-medium">Email</div>
+                    <div />
+                  </div>
                   <MultiSelectDropdown
                     label="Email"
                     options={emailOptions}
@@ -1026,6 +1046,10 @@ export default function App() {
                     searchEnabled={true}
                   />
 
+                  <div className="mt-4 flex items-center justify-between">
+                    <div className="text-sm font-medium">Status</div>
+                    <div />
+                  </div>
                   <MultiSelectDropdown
                     label="Status"
                     options={statusOptions}
@@ -1156,7 +1180,6 @@ export default function App() {
                   <div className="text-xs text-gray-500">Edit questions, save, publish, or share links. Core fields are mandatory and cannot be removed.</div>
                 </div>
                 <div className="flex gap-2">
-                  {/* Custom question is now only available inside form editor modal */}
                   <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
                   <button onClick={() => handleSaveForm(op.id)} className="px-3 py-1 border rounded">Save</button>
                   <button onClick={() => handlePublishForm(op.id)} className="px-3 py-1 bg-green-600 text-white rounded">Publish</button>
