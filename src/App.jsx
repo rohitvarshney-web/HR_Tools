@@ -15,13 +15,24 @@ const Icon = ({ name, className = "w-5 h-5 inline-block" }) => {
 };
 
 /* -------------------------
-   Template data
+   Protected core questions (stable IDs)
+   ------------------------- */
+const CORE_QUESTIONS = {
+  fullName: { id: "q_fullname", type: "short_text", label: "Full name", required: true },
+  email: { id: "q_email", type: "email", label: "Email address", required: true },
+  phone: { id: "q_phone", type: "short_text", label: "Phone number", required: true },
+  resume: { id: "q_resume", type: "file", label: "Upload resume / CV", required: true },
+};
+const PROTECTED_IDS = new Set(Object.values(CORE_QUESTIONS).map(q => q.id));
+
+/* -------------------------
+   Template data (others use uuids)
    ------------------------- */
 const templateQuestions = [
-  { id: uuidv4(), type: "short_text", label: "Full name", required: true },
-  { id: uuidv4(), type: "email", label: "Email address", required: true },
-  { id: uuidv4(), type: "short_text", label: "Phone number" },
-  { id: uuidv4(), type: "file", label: "Upload resume / CV", required: true },
+  CORE_QUESTIONS.fullName,
+  CORE_QUESTIONS.email,
+  CORE_QUESTIONS.phone,
+  CORE_QUESTIONS.resume,
   { id: uuidv4(), type: "number", label: "Years of experience" },
   { id: uuidv4(), type: "url", label: "LinkedIn / Portfolio URL" },
   { id: uuidv4(), type: "dropdown", label: "How did you hear about us?", options: ["LinkedIn", "Internshala", "Referral"] },
@@ -80,7 +91,7 @@ export default function App() {
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newOpening, setNewOpening] = useState({ title: "", location: "Delhi", department: "", preferredSources: [], durationMins: 30 });
-  const [forms, setForms] = useState({});
+  const [forms, setForms] = useState({}); // keyed by openingId: { questions: [...], meta: {...} }
   const [responses, setResponses] = useState([]);
 
   // Question bank (server-backed)
@@ -167,6 +178,37 @@ export default function App() {
   }
 
   /* -------------------------
+     Helper: ensure core fields exist in a form object (mutating copy)
+  ------------------------- */
+  function ensureCoreFieldsInForm(formObj) {
+    // formObj shape: { questions: [...], meta: {...} }
+    // ensure required meta.coreFields exists
+    const existingIds = new Set((formObj.questions || []).map(q => q.id));
+    const coreOrder = [CORE_QUESTIONS.fullName, CORE_QUESTIONS.email, CORE_QUESTIONS.phone, CORE_QUESTIONS.resume];
+    // Insert any missing core question at start (preserve order)
+    const missing = coreOrder.filter(cq => !existingIds.has(cq.id)).map(cq => ({ ...cq }));
+    if (missing.length) {
+      formObj.questions = [...missing, ...(formObj.questions || [])];
+    }
+    // Always mark required
+    formObj.questions = (formObj.questions || []).map(q => {
+      if (PROTECTED_IDS.has(q.id)) {
+        return { ...q, required: true };
+      }
+      return q;
+    });
+    // Ensure meta.coreFields mapping
+    formObj.meta = formObj.meta || {};
+    formObj.meta.coreFields = formObj.meta.coreFields || {
+      fullNameId: CORE_QUESTIONS.fullName.id,
+      emailId: CORE_QUESTIONS.email.id,
+      phoneId: CORE_QUESTIONS.phone.id,
+      resumeId: CORE_QUESTIONS.resume.id,
+    };
+    return formObj;
+  }
+
+  /* -------------------------
      Loaders for openings / responses / forms / question bank
   ------------------------- */
   async function loadOpenings() {
@@ -196,7 +238,15 @@ export default function App() {
       const allForms = await apiFetch('/api/forms');
       const map = {};
       (allForms || []).forEach(f => {
-        map[f.openingId] = { questions: (f.data && f.data.questions) || [], meta: (f.data && f.data.meta) || null, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at, openingId: f.openingId };
+        const obj = { questions: (f.data && f.data.questions) || [], meta: (f.data && f.data.meta) || null, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at, openingId: f.openingId };
+        map[f.openingId] = ensureCoreFieldsInForm(obj);
+      });
+      // For openings without a saved server form, keep an initialized local form with core fields
+      (openings || []).forEach(op => {
+        if (!map[op.id]) {
+          const base = { questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } };
+          map[op.id] = base;
+        }
       });
       setForms(map);
     } catch (err) {
@@ -235,16 +285,17 @@ export default function App() {
 
     try {
       const token = localStorage.getItem('token');
+      let created;
       if (!token) {
-        const created = { id: `op_${Date.now()}`, ...payload, createdAt: new Date().toISOString() };
+        created = { id: `op_${Date.now()}`, ...payload, createdAt: new Date().toISOString() };
         setOpenings(s => [created, ...s]);
-        setForms(f => ({ ...f, [created.id]: { questions: templateQuestions.slice(0,5).map(q => ({...q, id: uuidv4()})), meta: null } }));
       } else {
         const res = await apiFetch('/api/openings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        const created = { id: res.id, ...payload, createdAt: res.createdAt || new Date().toISOString() };
+        created = { id: res.id, ...payload, createdAt: res.createdAt || new Date().toISOString() };
         setOpenings(s => [created, ...s]);
-        setForms(f => ({ ...f, [created.id]: { questions: templateQuestions.slice(0,5).map(q => ({...q, id: uuidv4()})), meta: null } }));
       }
+      // initialize local form for this opening with core fields + small template
+      setForms(f => ({ ...f, [created.id]: ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } }) }));
       setShowCreate(false);
     } catch (err) {
       console.error('create opening', err);
@@ -285,19 +336,41 @@ export default function App() {
     }
   }
 
-  // addQuestion respects server-provided question IDs (if present)
+  // addQuestion respects server-provided question IDs (if present) and blocks duplicates of protected ids
   function addQuestion(openingId, q) {
     const question = { ...q, id: q.id || uuidv4() };
-    setForms((f) => ({ ...f, [openingId]: { ...(f[openingId] || { questions: [] }), questions: [...((f[openingId] && f[openingId].questions) || []), question], meta: f[openingId]?.meta || null } }));
+    setForms((f) => {
+      const existing = f[openingId] || { questions: [], meta: null };
+      const exists = (existing.questions || []).some(x => x.id === question.id);
+      if (exists) {
+        // already present — ignore
+        return f;
+      }
+      // don't allow adding protected question duplicates (core questions are already present)
+      if (PROTECTED_IDS.has(question.id)) {
+        // if not present, ensureCoreFieldsInForm will add them; but if already present or protected, ignore
+        return { ...f };
+      }
+      const newQuestions = [...(existing.questions || []), question];
+      return { ...f, [openingId]: { ...existing, questions: newQuestions } };
+    });
   }
 
   function removeQuestion(openingId, qid) {
-    setForms((f) => ({ ...f, [openingId]: { ...(f[openingId] || {}), questions: f[openingId].questions.filter(q => q.id !== qid), meta: f[openingId]?.meta || null } }));
+    if (PROTECTED_IDS.has(qid)) {
+      alert('This question is mandatory and cannot be removed.');
+      return;
+    }
+    setForms((f) => {
+      const existing = f[openingId] || { questions: [], meta: null };
+      const newQuestions = (existing.questions || []).filter(q => q.id !== qid);
+      return { ...f, [openingId]: { ...existing, questions: newQuestions, meta: existing.meta || null } };
+    });
   }
 
   function onDrag(openingId, from, to) {
     setForms((f) => {
-      const arr = [...(f[openingId].questions || [])];
+      const arr = [...(f[openingId]?.questions || [])];
       const [moved] = arr.splice(from, 1);
       arr.splice(to, 0, moved);
       return { ...f, [openingId]: { ...(f[openingId] || {}), questions: arr, meta: f[openingId]?.meta || null } };
@@ -332,40 +405,34 @@ export default function App() {
     }
   }
 
-  // Save form without publishing
+  // Save form without publishing (creates/updates server form and sets meta.coreFields)
   async function handleSaveForm(openingId) {
     const opening = openings.find(o => o.id === openingId);
     if (!opening) return;
 
-    const questionsToSave = (forms[openingId]?.questions && forms[openingId].questions.length)
-      ? forms[openingId].questions
-      : templateQuestions.slice(0, 5).map(q => ({ ...q, id: uuidv4() }));
+    // ensure core present
+    const current = forms[openingId] || { questions: [] };
+    const ensured = ensureCoreFieldsInForm({ questions: (current.questions || []).map(q => ({ ...q })), meta: { ...(current.meta || {}) } });
 
-    const meta = forms[openingId]?.meta || null;
-
+    const questionsToSave = ensured.questions;
+    const meta = ensured.meta || {};
+    // persist to server
     try {
       if (!localStorage.getItem('token')) {
-        alert('Not signed in — changes saved locally only.');
+        // store locally only
         setForms(f => ({ ...f, [openingId]: { questions: questionsToSave, meta } }));
+        alert('Not signed in — changes saved locally only.');
         return;
       }
 
       const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
-      let serverForm = (serverForms && serverForms.length) ? serverForms[0] : null;
+      const serverForm = (serverForms && serverForms.length) ? serverForms[0] : null;
       const payload = { openingId, data: { questions: questionsToSave, meta } };
 
       if (serverForm) {
-        await apiFetch(`/api/forms/${serverForm.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
+        await apiFetch(`/api/forms/${serverForm.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       } else {
-        await apiFetch(`/api/forms`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
+        await apiFetch(`/api/forms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       }
 
       setForms(f => ({ ...f, [openingId]: { questions: questionsToSave, meta } }));
@@ -388,8 +455,13 @@ export default function App() {
       shareLinks[src] = `${window.location.origin}/apply/${formId}?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(src)}`;
     });
     const generic = `${window.location.origin}/apply/${formId}?opening=${encodeURIComponent(openingId)}`;
-    const questionsToPublish = (forms[openingId]?.questions && forms[openingId].questions.length) ? forms[openingId].questions : templateQuestions.slice(0,5).map(q => ({...q, id: uuidv4()}));
-    const meta = { formId, isPublished: true, publishedAt: new Date().toISOString(), shareLinks, genericLink: generic };
+
+    // ensure core and meta
+    const current = forms[openingId] || { questions: [] };
+    const ensured = ensureCoreFieldsInForm({ questions: (current.questions || []).map(q => ({ ...q })), meta: (current.meta || {}) });
+
+    const questionsToPublish = ensured.questions;
+    const meta = { ...(ensured.meta || {}), formId, isPublished: true, publishedAt: new Date().toISOString(), shareLinks, genericLink: generic };
 
     // optimistic local update
     setForms((f) => ({ ...f, [openingId]: { questions: questionsToPublish, meta } }));
@@ -405,11 +477,10 @@ export default function App() {
 
       if (serverForm) {
         await apiFetch(`/api/forms/${serverForm.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        await loadForms();
       } else {
         await apiFetch(`/api/forms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        await loadForms();
       }
+      await loadForms();
       alert('Form published and saved to server.');
     } catch (err) {
       console.error('publish form failed', err);
@@ -452,6 +523,16 @@ export default function App() {
 
   // Open/close Form Editor modal
   function openFormModal(openingId) {
+    // ensure the opening has a local form in state (with core fields)
+    setForms((f) => {
+      const copy = { ...f };
+      if (!copy[openingId]) {
+        copy[openingId] = ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } });
+      } else {
+        copy[openingId] = ensureCoreFieldsInForm({ questions: (copy[openingId].questions || []).map(q => ({ ...q })), meta: (copy[openingId].meta || {}) });
+      }
+      return copy;
+    });
     setFormModalOpeningId(openingId);
     setShowFormModal(true);
   }
@@ -581,8 +662,8 @@ export default function App() {
           <nav className="space-y-2">
             <div onClick={() => setActiveTab("overview")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'overview' ? 'bg-gray-800' : ''}`}>{<Icon name="menu" />} Overview</div>
             <div onClick={() => setActiveTab("jobs")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'jobs' ? 'bg-gray-800' : ''}`}>Jobs</div>
-            {/* removed "Form Editor" nav item on purpose — access via opening card modal */}
-            <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg-gray-800' : ''}`}>Hiring</div>
+            {/* "Form Editor" nav removed — editor is accessible from opening card */}
+            <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg.Gray-800' : ''}`}>Hiring</div>
           </nav>
         </div>
       </aside>
@@ -672,7 +753,6 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-3">
                     <button onClick={() => handleEditOpeningOpen(op)} className="px-3 py-1 border rounded">Edit</button>
-                    {/* removed "+ Custom Question" CTA from job list */}
                     <button onClick={() => openFormModal(op.id)} className="px-3 py-1 bg-blue-600 text-white rounded">Form Editor</button>
                     <button onClick={() => handleDeleteOpening(op.id)} className="text-red-600 flex items-center gap-1"><Icon name="trash" /> Delete</button>
                   </div>
@@ -835,14 +915,14 @@ export default function App() {
       {/* FORM EDITOR MODAL (per opening) */}
       {showFormModal && formModalOpeningId && (() => {
         const op = openings.find(o => o.id === formModalOpeningId) || { id: formModalOpeningId, title: 'Opening' };
-        const formObj = forms[formModalOpeningId] || { questions: [], meta: null };
+        const formObj = forms[formModalOpeningId] || ensureCoreFieldsInForm({ questions: templateQuestions.slice(0,4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } });
         return (
           <div key={"formmodal_" + formModalOpeningId} className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
             <div className="bg-white rounded-lg p-6 w-[920px] max-h-[90vh] overflow-auto shadow-xl">
               <div className="flex items-start justify-between mb-4">
                 <div>
                   <h3 className="text-lg font-semibold mb-1">Form Editor — {op.title}</h3>
-                  <div className="text-xs text-gray-500">Edit questions, save, publish, or share links.</div>
+                  <div className="text-xs text-gray-500">Edit questions, save, publish, or share links. Core fields are mandatory and cannot be removed.</div>
                 </div>
                 <div className="flex gap-2">
                   {/* Custom question is now only available inside form editor modal */}
@@ -881,11 +961,11 @@ export default function App() {
                     {(formObj.questions || []).map((q, idx) => (
                       <li key={q.id} draggable onDragStart={(e) => e.dataTransfer.setData('from', idx)} onDrop={(e) => { const from = parseInt(e.dataTransfer.getData('from')); onDrag(op.id, from, idx); }} onDragOver={(e) => e.preventDefault()} className="p-2 border mb-2 flex justify-between items-center">
                         <div>
-                          <div className="font-medium">{q.label}</div>
+                          <div className="font-medium">{q.label}{PROTECTED_IDS.has(q.id) ? ' (mandatory)' : ''}</div>
                           <div className="text-xs text-gray-500">{q.type}{q.required ? ' • required' : ''}</div>
                         </div>
                         <div className="flex gap-2">
-                          <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500">Remove</button>
+                          {!PROTECTED_IDS.has(q.id) ? <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500">Remove</button> : <div className="text-xs text-gray-400">Protected</div>}
                         </div>
                       </li>
                     ))}
@@ -897,7 +977,7 @@ export default function App() {
 
                   {formObj.meta?.isPublished ? (
                     <div>
-                      <div className="text-sm text-gray-600 mb-2">Form published on {new Date(formObj.meta.publishedAt).toLocaleString()}</div>
+                      <div className="text-sm text-gray-600 mb-2">Form published on {formObj.meta.publishedAt ? new Date(formObj.meta.publishedAt).toLocaleString() : ''}</div>
 
                       <div className="mb-2">
                         <div className="text-xs font-semibold">Shareable links (by source)</div>
