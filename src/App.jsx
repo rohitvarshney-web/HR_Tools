@@ -86,9 +86,8 @@ function LoginPage({ backendUrl }) {
    - selected: array of strings
    - onChange: (newSelectedArray) => void
    - placeholder: text
-   - label: visible label to left
 ------------------------- */
-function MultiSelectDropdown({ items = [], selected = [], onChange, placeholder = "Select", label }) {
+function MultiSelectDropdown({ items = [], selected = [], onChange, placeholder = "Select" }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const ref = useRef();
@@ -743,6 +742,10 @@ export default function App() {
   const statusList = useMemo(() => {
     const s = new Set();
     responses.forEach(r => { if (r.status) s.add(r.status); });
+    // ensure we have common statuses if none in data
+    if (s.size === 0) {
+      ["Applied","Screening","Interview","Offer","Hired","Rejected"].forEach(x => s.add(x));
+    }
     return Array.from(s).sort();
   }, [responses]);
 
@@ -833,13 +836,12 @@ export default function App() {
           <nav className="space-y-2">
             <div onClick={() => setActiveTab("overview")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'overview' ? 'bg-gray-800' : ''}`}>{<Icon name="menu" />} Overview</div>
             <div onClick={() => setActiveTab("jobs")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'jobs' ? 'bg-gray-800' : ''}`}>Jobs</div>
-            {/* "Form Editor" nav removed — editor is accessible from opening card */}
             <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg.Gray-800' : ''}`}>Hiring</div>
           </nav>
         </div>
       </aside>
 
-      {/* Main content */}
+      {/* Main content (left) and filters (right) */}
       <main className="flex-1 p-8 overflow-auto">
         {activeTab === "overview" && (
           <>
@@ -938,71 +940,11 @@ export default function App() {
             <h1 className="text-2xl font-semibold mb-6">Hiring</h1>
 
             <div className="grid grid-cols-3 gap-6">
+              {/* Left: Candidates list (col-span-2) */}
               <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
                 <h2 className="font-semibold mb-4">Candidates</h2>
 
                 <div className="space-y-4">
-                  {/* Filters area */}
-                  <div className="bg-gray-50 border rounded p-4 mb-4">
-                    <div className="grid grid-cols-3 gap-4">
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <div className="text-sm font-medium">Opening</div>
-                          <div className="text-sm"><button onClick={() => setFilterOpening([])} className="text-blue-600">Clear</button></div>
-                        </div>
-                        <MultiSelectDropdown items={openingTitlesList} selected={filterOpening} onChange={setFilterOpening} placeholder="All Opening" />
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <div className="text-sm font-medium">Location</div>
-                          <div className="text-sm"><button onClick={() => setFilterLocation([])} className="text-blue-600">Clear</button></div>
-                        </div>
-                        <MultiSelectDropdown items={locationsList} selected={filterLocation} onChange={setFilterLocation} placeholder="All Location" />
-                      </div>
-
-                      <div>
-                        <div className="flex items:center justify-between mb-1">
-                          <div className="text-sm font-medium">Department</div>
-                          <div className="text-sm"><button onClick={() => setFilterDepartment([])} className="text-blue-600">Clear</button></div>
-                        </div>
-                        <MultiSelectDropdown items={departmentsList} selected={filterDepartment} onChange={setFilterDepartment} placeholder="All Department" />
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <div className="text-sm font-medium">Source</div>
-                          <div className="text-sm"><button onClick={() => setFilterSource([])} className="text-blue-600">Clear</button></div>
-                        </div>
-                        <MultiSelectDropdown items={sourcesList} selected={filterSource} onChange={setFilterSource} placeholder="All Source" />
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <div className="text-sm font-medium">Full name</div>
-                          <div className="text-sm"><button onClick={() => setFilterFullName([])} className="text-blue-600">Clear</button></div>
-                        </div>
-                        <MultiSelectDropdown items={fullNamesList} selected={filterFullName} onChange={setFilterFullName} placeholder="All Full name" />
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <div className="text-sm font-medium">Email</div>
-                          <div className="text-sm"><button onClick={() => setFilterEmail([])} className="text-blue-600">Clear</button></div>
-                        </div>
-                        <MultiSelectDropdown items={emailsList} selected={filterEmail} onChange={setFilterEmail} placeholder="All Email" />
-                      </div>
-
-                      <div className="col-span-3 mt-3">
-                        <div className="flex items-center justify-between mb-1">
-                          <div className="text-sm font-medium">Status</div>
-                          <div className="text-sm"><button onClick={() => setFilterStatus([])} className="text-blue-600">Clear</button></div>
-                        </div>
-                        <MultiSelectDropdown items={statusList} selected={filterStatus} onChange={setFilterStatus} placeholder="All Status" />
-                      </div>
-                    </div>
-                  </div>
-
                   {filteredResponses.length === 0 && <div className="text-sm text-gray-500">No candidates yet.</div>}
                   {filteredResponses.map(resp => {
                     const opening = openings.find(o => o.id === resp.openingId) || {};
@@ -1010,30 +952,36 @@ export default function App() {
                     const candidateEmail = resp.email || resp.answers?.email || resp.answers?.['Email address'] || '';
                     return (
                       <div key={resp.id} className="p-4 border rounded flex justify-between items-start">
-                        <div>
-                          {/* Name at top, email in parentheses */}
-                          <div className="font-semibold">{candidateName} {candidateEmail ? <span className="text-sm text-gray-500">({candidateEmail})</span> : null}</div>
+                        {/* Left column: main candidate info */}
+                        <div className="flex-1 pr-4">
+                          {/* Name at top, email in parentheses styled as secondary info */}
+                          <div className="font-semibold">{candidateName} {candidateEmail ? <span className="text-xs text-gray-500">({candidateEmail})</span> : null}</div>
 
                           {/* Opening name and location inline (secondary info style) */}
                           <div className="text-xs text-gray-500 mt-1">
                             {opening.title || resp.openingId} • {opening.location || ''}
                           </div>
 
-                          {/* Applied at (was previously response id location) */}
-                          <div className="text-xs text-gray-500 mt-1">
-                            Applied at: {new Date(resp.createdAt).toLocaleString()}
-                          </div>
-
-                          <div className="text-xs text-gray-500 mt-2">Source: {resp.source}</div>
+                          <div className="text-xs text-gray-500 mt-2">Source: {resp.source || 'unknown'}</div>
 
                           {/* Resume + response id beside it separated by | */}
-                          {resp.resumeLink && <div className="text-xs mt-2"><a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">Resume</a> <span className="mx-2 text-gray-400">|</span> <span className="text-gray-400">{resp.id}</span></div>}
-                          {!resp.resumeLink && <div className="text-xs mt-2 text-gray-400">{resp.id}</div>}
+                          <div className="text-xs mt-3">
+                            {resp.resumeLink ? (
+                              <>
+                                <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">Resume</a>
+                                <span className="mx-2 text-gray-400">|</span>
+                                <span className="text-gray-400">{resp.id}</span>
+                              </>
+                            ) : (
+                              <span className="text-gray-400">{resp.id}</span>
+                            )}
+                          </div>
                         </div>
 
-                        <div className="flex flex-col items-end gap-2">
+                        {/* Right column: status selector and applied timestamp at bottom */}
+                        <div className="flex flex-col items-end" style={{ minWidth: 140 }}>
                           <div className="text-xs text-gray-500">Status</div>
-                          <select value={resp.status || 'Applied'} onChange={(e) => updateCandidateStatus(resp.id, e.target.value)} className="border p-2 rounded">
+                          <select value={resp.status || 'Applied'} onChange={(e) => updateCandidateStatus(resp.id, e.target.value)} className="border p-2 rounded mb-2">
                             <option>Applied</option>
                             <option>Screening</option>
                             <option>Interview</option>
@@ -1041,6 +989,9 @@ export default function App() {
                             <option>Hired</option>
                             <option>Rejected</option>
                           </select>
+
+                          {/* Applied at — bottom-right corner (secondary small text) */}
+                          <div className="text-xs text-gray-500 mt-auto">Applied at: {new Date(resp.createdAt).toLocaleString()}</div>
                         </div>
                       </div>
                     );
@@ -1048,16 +999,79 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Right: Filters + summary (col-span-1) */}
               <aside className="bg-white rounded-lg p-6 shadow-sm">
-                <h3 className="font-semibold mb-3">Filters Summary</h3>
-                <div className="text-sm text-gray-600">
-                  <div>Openings: {filterOpening.length ? filterOpening.join(', ') : 'All'}</div>
-                  <div>Locations: {filterLocation.length ? filterLocation.join(', ') : 'All'}</div>
-                  <div>Departments: {filterDepartment.length ? filterDepartment.join(', ') : 'All'}</div>
-                  <div>Source: {filterSource.length ? filterSource.join(', ') : 'All'}</div>
-                  <div>Full name: {filterFullName.length ? filterFullName.join(', ') : 'All'}</div>
-                  <div>Email: {filterEmail.length ? filterEmail.join(', ') : 'All'}</div>
-                  <div>Status: {filterStatus.length ? filterStatus.join(', ') : 'All'}</div>
+                <h3 className="font-semibold mb-3">Filters</h3>
+
+                <div className="space-y-4">
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-sm font-medium">Opening</div>
+                      <div className="text-sm"><button onClick={() => setFilterOpening([])} className="text-blue-600">Clear</button></div>
+                    </div>
+                    <MultiSelectDropdown items={openingTitlesList} selected={filterOpening} onChange={setFilterOpening} placeholder="All Opening" />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-sm font-medium">Location</div>
+                      <div className="text-sm"><button onClick={() => setFilterLocation([])} className="text-blue-600">Clear</button></div>
+                    </div>
+                    <MultiSelectDropdown items={locationsList} selected={filterLocation} onChange={setFilterLocation} placeholder="All Location" />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-sm font-medium">Department</div>
+                      <div className="text-sm"><button onClick={() => setFilterDepartment([])} className="text-blue-600">Clear</button></div>
+                    </div>
+                    <MultiSelectDropdown items={departmentsList} selected={filterDepartment} onChange={setFilterDepartment} placeholder="All Department" />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-sm font-medium">Source</div>
+                      <div className="text-sm"><button onClick={() => setFilterSource([])} className="text-blue-600">Clear</button></div>
+                    </div>
+                    <MultiSelectDropdown items={sourcesList} selected={filterSource} onChange={setFilterSource} placeholder="All Source" />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-sm font-medium">Full name</div>
+                      <div className="text-sm"><button onClick={() => setFilterFullName([])} className="text-blue-600">Clear</button></div>
+                    </div>
+                    <MultiSelectDropdown items={fullNamesList} selected={filterFullName} onChange={setFilterFullName} placeholder="All Full name" />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-sm font-medium">Email</div>
+                      <div className="text-sm"><button onClick={() => setFilterEmail([])} className="text-blue-600">Clear</button></div>
+                    </div>
+                    <MultiSelectDropdown items={emailsList} selected={filterEmail} onChange={setFilterEmail} placeholder="All Email" />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-sm font-medium">Status</div>
+                      <div className="text-sm"><button onClick={() => setFilterStatus([])} className="text-blue-600">Clear</button></div>
+                    </div>
+                    <MultiSelectDropdown items={statusList} selected={filterStatus} onChange={setFilterStatus} placeholder="All Status" />
+                  </div>
+                </div>
+
+                <div className="mt-6">
+                  <h4 className="font-semibold mb-2">Filters Summary</h4>
+                  <div className="text-sm text-gray-600">
+                    <div>Openings: {filterOpening.length ? filterOpening.join(', ') : 'All'}</div>
+                    <div>Locations: {filterLocation.length ? filterLocation.join(', ') : 'All'}</div>
+                    <div>Departments: {filterDepartment.length ? filterDepartment.join(', ') : 'All'}</div>
+                    <div>Source: {filterSource.length ? filterSource.join(', ') : 'All'}</div>
+                    <div>Full name: {filterFullName.length ? filterFullName.join(', ') : 'All'}</div>
+                    <div>Email: {filterEmail.length ? filterEmail.join(', ') : 'All'}</div>
+                    <div>Status: {filterStatus.length ? filterStatus.join(', ') : 'All'}</div>
+                  </div>
                 </div>
               </aside>
             </div>
