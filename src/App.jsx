@@ -342,12 +342,11 @@ async function handlePublishForm(openingId) {
   const opening = openings.find(o => o.id === openingId);
   if (!opening) return;
 
-  // Build canonical questions to publish
   const questionsToPublish = (forms[openingId]?.questions && forms[openingId].questions.length)
     ? forms[openingId].questions
     : templateQuestions.slice(0,5).map(q => ({ ...q, id: uuidv4() }));
 
-  // If user is not signed in, keep the old behavior (local only)
+  // Not signed in -> local-only publish
   if (!localStorage.getItem('token')) {
     const formId = `form_${Date.now()}`;
     const sources = (opening.preferredSources && opening.preferredSources.length) ? opening.preferredSources : ["generic"];
@@ -357,63 +356,51 @@ async function handlePublishForm(openingId) {
     });
     const generic = `${window.location.origin}/apply/${formId}?opening=${encodeURIComponent(openingId)}`;
     const meta = { formId, isPublished: true, publishedAt: new Date().toISOString(), shareLinks, genericLink: generic };
-
     setForms(f => ({ ...f, [openingId]: { questions: questionsToPublish, meta } }));
     alert('Published locally (not persisted). Sign-in to persist forms to server.');
     return;
   }
 
-  // Authenticated publish — prefer server's returned meta
   try {
-    // Check existing server form for this opening
     const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
     const existingServerForm = (serverForms && serverForms.length) ? serverForms[0] : null;
-
     const payload = { openingId, data: { questions: questionsToPublish, meta: { isPublished: true } } };
 
     let savedForm = null;
     if (existingServerForm) {
-      // Update server form
-      const updated = await apiFetch(`/api/forms/${existingServerForm.id}`, {
+      savedForm = await apiFetch(`/api/forms/${existingServerForm.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      savedForm = updated || null;
     } else {
-      // Create server form
-      const created = await apiFetch(`/api/forms`, {
+      savedForm = await apiFetch(`/api/forms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      savedForm = created || null;
     }
 
-    // If server returned a form with data.meta (preferred), use it.
-    if (savedForm && savedForm.data && savedForm.data.meta) {
-      // Ensure the meta has shareLinks/formId — if not present, build them using server id as fallback
-      const meta = { ...savedForm.data.meta };
-      if (!meta.formId) meta.formId = savedForm.id || `form_${Date.now()}`;
-      if (!meta.genericLink) meta.genericLink = `${window.location.origin}/apply/${meta.formId}?opening=${encodeURIComponent(openingId)}`;
-      if (!meta.shareLinks) {
-        const sources = (opening.preferredSources && opening.preferredSources.length) ? opening.preferredSources : ["generic"];
-        const shareLinks = {};
-        sources.forEach(src => {
-          shareLinks[src] = `${window.location.origin}/apply/${meta.formId}?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(src)}`;
-        });
-        meta.shareLinks = shareLinks;
-      }
-      // Update local forms map with server's questions + meta
-      setForms(f => ({ ...f, [openingId]: { questions: savedForm.data.questions || questionsToPublish, meta } }));
-    } else {
-      // fallback: reload all forms from server (keeps state consistent)
-      await loadForms();
+    // prefer server meta, build fallbacks if necessary
+    let meta = (savedForm && savedForm.data && savedForm.data.meta) ? savedForm.data.meta : null;
+    const effectiveFormId = (meta && meta.formId) ? meta.formId : (savedForm && savedForm.id) ? savedForm.id : `form_${Date.now()}`;
+    if (!meta) meta = { formId: effectiveFormId, isPublished: true, publishedAt: new Date().toISOString() };
+    if (!meta.genericLink) meta.genericLink = `${window.location.origin}/apply/${effectiveFormId}?opening=${encodeURIComponent(openingId)}`;
+    if (!meta.shareLinks) {
+      const sources = (opening.preferredSources && opening.preferredSources.length) ? opening.preferredSources : ["generic"];
+      const shareLinks = {};
+      sources.forEach(src => {
+        shareLinks[src] = `${window.location.origin}/apply/${effectiveFormId}?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(src)}`;
+      });
+      meta.shareLinks = shareLinks;
     }
+
+    // Update local forms state immediately with server's questions + meta
+    setForms(f => ({ ...f, [openingId]: { questions: (savedForm && savedForm.data && savedForm.data.questions) || questionsToPublish, meta } }));
 
     alert('Form published and saved to server.');
   } catch (err) {
-    console.error('publish form failed (improved)', err);
+    console.error('publish form failed', err);
     alert('Publish failed: ' + (err?.body?.error || err?.body?.message || err.message || 'unknown'));
   }
 }
