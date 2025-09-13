@@ -15,7 +15,7 @@ const Icon = ({ name, className = "w-5 h-5 inline-block" }) => {
 };
 
 /* -------------------------
-   Template data (unchanged)
+   Template data
    ------------------------- */
 const templateQuestions = [
   { id: uuidv4(), type: "short_text", label: "Full name", required: true },
@@ -90,7 +90,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
 
-  // custom question modal
+  // custom question modal (only shown from inside form modal)
   const [showCustomModal, setShowCustomModal] = useState(false);
   const [customOpeningId, setCustomOpeningId] = useState(null);
   const [customQ, setCustomQ] = useState({ label: "", type: "short_text", required: false, optionsText: "" });
@@ -168,7 +168,7 @@ export default function App() {
 
   /* -------------------------
      Loaders for openings / responses / forms / question bank
-     ------------------------- */
+  ------------------------- */
   async function loadOpenings() {
     try {
       if (!localStorage.getItem('token')) return;
@@ -217,7 +217,7 @@ export default function App() {
 
   /* -------------------------
      UI functions (create/edit/delete/publish/save)
-     ------------------------- */
+  ------------------------- */
   function openCreate() {
     setNewOpening({ title: "", location: "Delhi", department: "", preferredSources: [], durationMins: 30 });
     setShowCreate(true);
@@ -304,6 +304,7 @@ export default function App() {
     });
   }
 
+  // open custom modal (only used inside form editor modal)
   function openCustomModalFor(openingId) {
     setCustomOpeningId(openingId);
     setCustomQ({ label: "", type: "short_text", required: false, optionsText: "" });
@@ -511,7 +512,7 @@ export default function App() {
 
   /* -------------------------
      Hiring management helpers
-     ------------------------- */
+  ------------------------- */
 
   // Update candidate status
   async function updateCandidateStatus(responseId, newStatus) {
@@ -537,7 +538,7 @@ export default function App() {
 
   /* -------------------------
      Render gating
-     ------------------------- */
+  ------------------------- */
   if (!authChecked) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -552,7 +553,7 @@ export default function App() {
 
   /* -------------------------
      UI
-     ------------------------- */
+  ------------------------- */
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800 flex">
       {/* Sidebar */}
@@ -580,7 +581,7 @@ export default function App() {
           <nav className="space-y-2">
             <div onClick={() => setActiveTab("overview")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'overview' ? 'bg-gray-800' : ''}`}>{<Icon name="menu" />} Overview</div>
             <div onClick={() => setActiveTab("jobs")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'jobs' ? 'bg-gray-800' : ''}`}>Jobs</div>
-            {/* Removed "Form Editor" nav item on purpose — access via opening card modal */}
+            {/* removed "Form Editor" nav item on purpose — access via opening card modal */}
             <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg-gray-800' : ''}`}>Hiring</div>
           </nav>
         </div>
@@ -671,7 +672,7 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-3">
                     <button onClick={() => handleEditOpeningOpen(op)} className="px-3 py-1 border rounded">Edit</button>
-                    <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
+                    {/* removed "+ Custom Question" CTA from job list */}
                     <button onClick={() => openFormModal(op.id)} className="px-3 py-1 bg-blue-600 text-white rounded">Form Editor</button>
                     <button onClick={() => handleDeleteOpening(op.id)} className="text-red-600 flex items-center gap-1"><Icon name="trash" /> Delete</button>
                   </div>
@@ -729,7 +730,8 @@ export default function App() {
         )}
       </main>
 
-      {/* Modals (create/edit/custom/public form, + new Form Editor modal) */}
+      {/* Modals (create/edit/form editor/public view + custom question modal) */}
+
       {showCreate && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-[720px] shadow-xl">
@@ -843,6 +845,7 @@ export default function App() {
                   <div className="text-xs text-gray-500">Edit questions, save, publish, or share links.</div>
                 </div>
                 <div className="flex gap-2">
+                  {/* Custom question is now only available inside form editor modal */}
                   <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
                   <button onClick={() => handleSaveForm(op.id)} className="px-3 py-1 border rounded">Save</button>
                   <button onClick={() => handlePublishForm(op.id)} className="px-3 py-1 bg-green-600 text-white rounded">Publish</button>
@@ -855,7 +858,7 @@ export default function App() {
                 <div className="w-1/3 border-r pr-4">
                   <h3 className="font-semibold mb-2">Question Bank</h3>
                   {questionBank.length === 0 ? (
-                    <div className="text-xs text-gray-400">No questions in bank yet. Create one using "+ Custom Question" or via the modal.</div>
+                    <div className="text-xs text-gray-400">No questions in bank yet. Create one using "+ Custom Question" inside this editor.</div>
                   ) : (
                     questionBank.map(q => (
                       <div key={q.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(op.id, q)}>
@@ -935,9 +938,9 @@ export default function App() {
         );
       })()}
 
+      {/* Custom Question Modal: ensure it sits above Form Editor modal by giving a very high inline zIndex */}
       {showCustomModal && (
-        // higher z-index so it sits above the Form Editor modal
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-60">
+        <div style={{ zIndex: 2000 }} className="fixed inset-0 bg-black/30 flex items-center justify-center">
           <div className="bg-white rounded-lg p-6 w-[560px] shadow-xl">
             <h3 className="text-lg font-semibold mb-3">Add Custom Question</h3>
             <form onSubmit={handleAddCustomQuestion} className="space-y-3">
