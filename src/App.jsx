@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect } from "react";
 import { v4 as uuidv4 } from "uuid";
 
 /* Small inline icons component */
@@ -144,6 +144,7 @@ export default function App() {
     } else {
       setAuthChecked(true);
     }
+    // eslint-disable-next-line
   }, []);
 
   async function fetchProfile(token) {
@@ -191,23 +192,18 @@ export default function App() {
      Helper: ensure core fields exist in a form object (mutating copy)
   ------------------------- */
   function ensureCoreFieldsInForm(formObj) {
-    // formObj shape: { questions: [...], meta: {...} }
-    // ensure required meta.coreFields exists
     const existingIds = new Set((formObj.questions || []).map(q => q.id));
     const coreOrder = [CORE_QUESTIONS.fullName, CORE_QUESTIONS.email, CORE_QUESTIONS.phone, CORE_QUESTIONS.resume];
-    // Insert any missing core question at start (preserve order)
     const missing = coreOrder.filter(cq => !existingIds.has(cq.id)).map(cq => ({ ...cq }));
     if (missing.length) {
       formObj.questions = [...missing, ...(formObj.questions || [])];
     }
-    // Always mark required
     formObj.questions = (formObj.questions || []).map(q => {
       if (PROTECTED_IDS.has(q.id)) {
         return { ...q, required: true };
       }
       return q;
     });
-    // Ensure meta.coreFields mapping
     formObj.meta = formObj.meta || {};
     formObj.meta.coreFields = formObj.meta.coreFields || {
       fullNameId: CORE_QUESTIONS.fullName.id,
@@ -241,7 +237,6 @@ export default function App() {
     }
   }
 
-  // load forms from server and map them into forms state keyed by openingId
   async function loadForms() {
     try {
       if (!localStorage.getItem('token')) return;
@@ -251,7 +246,6 @@ export default function App() {
         const obj = { questions: (f.data && f.data.questions) || [], meta: (f.data && f.data.meta) || null, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at, openingId: f.openingId };
         map[f.openingId] = ensureCoreFieldsInForm(obj);
       });
-      // For openings without a saved server form, keep an initialized local form with core fields
       (openings || []).forEach(op => {
         if (!map[op.id]) {
           const base = { questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } };
@@ -264,7 +258,6 @@ export default function App() {
     }
   }
 
-  // load question bank
   async function loadQuestionBank() {
     try {
       if (!localStorage.getItem('token')) return;
@@ -304,7 +297,6 @@ export default function App() {
         created = { id: res.id, ...payload, createdAt: res.createdAt || new Date().toISOString() };
         setOpenings(s => [created, ...s]);
       }
-      // initialize local form for this opening with core fields + small template
       setForms(f => ({ ...f, [created.id]: ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } }) }));
       setShowCreate(false);
     } catch (err) {
@@ -321,7 +313,6 @@ export default function App() {
   function handleSaveEdit(e) {
     e.preventDefault();
     setOpenings((s) => s.map(op => op.id === editingOpening.id ? editingOpening : op));
-    // Persist edit if authenticated
     if (localStorage.getItem('token')) {
       apiFetch(`/api/openings/${editingOpening.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editingOpening) })
         .catch(err => console.error('Failed to persist opening edit', err));
@@ -335,7 +326,6 @@ export default function App() {
       if (localStorage.getItem('token')) {
         await apiFetch(`/api/openings/${id}`, { method: 'DELETE' });
         setOpenings(s => s.filter(op => op.id !== id));
-        // refresh forms map
         await loadForms();
       } else {
         setOpenings(s => s.filter(op => op.id !== id));
@@ -346,19 +336,13 @@ export default function App() {
     }
   }
 
-  // addQuestion respects server-provided question IDs (if present) and blocks duplicates of protected ids
   function addQuestion(openingId, q) {
     const question = { ...q, id: q.id || uuidv4() };
     setForms((f) => {
       const existing = f[openingId] || { questions: [], meta: null };
       const exists = (existing.questions || []).some(x => x.id === question.id);
-      if (exists) {
-        // already present — ignore
-        return f;
-      }
-      // don't allow adding protected question duplicates (core questions are already present)
+      if (exists) return f;
       if (PROTECTED_IDS.has(question.id)) {
-        // if not present, ensureCoreFieldsInForm will add them; but if already present or protected, ignore
         return { ...f };
       }
       const newQuestions = [...(existing.questions || []), question];
@@ -387,14 +371,12 @@ export default function App() {
     });
   }
 
-  // open custom modal (only used inside form editor modal)
   function openCustomModalFor(openingId) {
     setCustomOpeningId(openingId);
     setCustomQ({ label: "", type: "short_text", required: false, optionsText: "" });
     setShowCustomModal(true);
   }
 
-  // Create custom question; persist to server bank if signed in, then add to local form
   async function handleAddCustomQuestion(e) {
     e.preventDefault();
     const options = customQ.optionsText.split("\n").map(s => s.trim()).filter(Boolean);
@@ -415,21 +397,16 @@ export default function App() {
     }
   }
 
-  // Save form without publishing (creates/updates server form and sets meta.coreFields)
   async function handleSaveForm(openingId) {
     const opening = openings.find(o => o.id === openingId);
     if (!opening) return;
-
-    // ensure core present
     const current = forms[openingId] || { questions: [] };
     const ensured = ensureCoreFieldsInForm({ questions: (current.questions || []).map(q => ({ ...q })), meta: { ...(current.meta || {}) } });
 
     const questionsToSave = ensured.questions;
     const meta = ensured.meta || {};
-    // persist to server
     try {
       if (!localStorage.getItem('token')) {
-        // store locally only
         setForms(f => ({ ...f, [openingId]: { questions: questionsToSave, meta } }));
         alert('Not signed in — changes saved locally only.');
         return;
@@ -454,7 +431,6 @@ export default function App() {
     }
   }
 
-  // Publish form (generates share links + persists)
   async function handlePublishForm(openingId) {
     const opening = openings.find(o => o.id === openingId);
     if (!opening) return;
@@ -466,14 +442,12 @@ export default function App() {
     });
     const generic = `${window.location.origin}/apply/${formId}?opening=${encodeURIComponent(openingId)}`;
 
-    // ensure core and meta
     const current = forms[openingId] || { questions: [] };
     const ensured = ensureCoreFieldsInForm({ questions: (current.questions || []).map(q => ({ ...q })), meta: (current.meta || {}) });
 
     const questionsToPublish = ensured.questions;
     const meta = { ...(ensured.meta || {}), formId, isPublished: true, publishedAt: new Date().toISOString(), shareLinks, genericLink: generic };
 
-    // optimistic local update
     setForms((f) => ({ ...f, [openingId]: { questions: questionsToPublish, meta } }));
 
     try {
@@ -506,52 +480,6 @@ export default function App() {
     setPublicView({ openingId, source, submitted: false });
   }
 
-  // Delete single form
-  async function deleteFormByOpening(openingId) {
-    if (!confirm('Delete the server-saved form for this opening?')) return;
-    try {
-      if (!localStorage.getItem('token')) {
-        setForms(f => { const copy = { ...f }; delete copy[openingId]; return copy; });
-        alert('Form deleted locally.');
-        return;
-      }
-      const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
-      if (!serverForms || serverForms.length === 0) {
-        setForms(f => { const copy = { ...f }; delete copy[openingId]; return copy; });
-        alert('No server form found; removed local copy.');
-        return;
-      }
-      const serverForm = serverForms[0];
-      await apiFetch(`/api/forms/${serverForm.id}`, { method: 'DELETE' });
-      setForms(f => { const copy = { ...f }; delete copy[openingId]; return copy; });
-      alert('Form deleted from server.');
-    } catch (err) {
-      console.error('delete form failed', err);
-      alert('Delete failed: ' + (err?.body?.error || err.message || 'unknown'));
-    }
-  }
-
-  // Open/close Form Editor modal
-  function openFormModal(openingId) {
-    // ensure the opening has a local form in state (with core fields)
-    setForms((f) => {
-      const copy = { ...f };
-      if (!copy[openingId]) {
-        copy[openingId] = ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } });
-      } else {
-        copy[openingId] = ensureCoreFieldsInForm({ questions: (copy[openingId].questions || []).map(q => ({ ...q })), meta: (copy[openingId].meta || {}) });
-      }
-      return copy;
-    });
-    setFormModalOpeningId(openingId);
-    setShowFormModal(true);
-  }
-  function closeFormModal() {
-    setShowFormModal(false);
-    setFormModalOpeningId(null);
-  }
-
-  // Submit public form (unchanged)
   async function handlePublicSubmit(e) {
     e.preventDefault();
     const formEl = e.target;
@@ -605,7 +533,6 @@ export default function App() {
      Hiring management helpers
   ------------------------- */
 
-  // Update candidate status
   async function updateCandidateStatus(responseId, newStatus) {
     try {
       setResponses(prev => prev.map(r => r.id === responseId ? { ...r, status: newStatus } : r));
@@ -673,7 +600,6 @@ export default function App() {
       const found = keys.find(k => (k || '').toString().toLowerCase().trim() === cand.toLowerCase().trim());
       if (found) return answers[found];
     }
-    // try fuzzy contains
     for (const k of keys) {
       if ((k || '').toLowerCase().includes('email')) return answers[k];
     }
@@ -686,7 +612,6 @@ export default function App() {
     return null;
   }
 
-  // Toggle filter value in a named filter set
   function toggleFilter(group, value) {
     setFilters(prev => {
       const copy = {
@@ -711,68 +636,48 @@ export default function App() {
     setFilters({ openings: new Set(), locations: new Set(), departments: new Set(), sources: new Set(), names: new Set(), emails: new Set() });
   }
 
-  // Build unique lists for filter options (memoized)
-  const filterOptions = useMemo(() => {
-    const openingTitles = new Map(); // id -> title
-    openings.forEach(o => { openingTitles.set(o.id, o.title || o.id); });
+  // Build unique lists for filter options (computed each render)
+  const openingTitlesSet = new Set(openings.map(o => o.title || o.id));
+  const openingsByTitle = Array.from(openingTitlesSet).sort();
+  const locations = Array.from(new Set(openings.map(o => o.location || '').filter(Boolean))).sort();
+  const departments = Array.from(new Set(openings.map(o => o.department || '').filter(Boolean))).sort();
+  const sources = Array.from(new Set(responses.map(r => r.source || 'unknown').filter(Boolean))).sort();
+  const names = Array.from(new Set(responses.map(r => {
+    const op = openings.find(o => o.id === r.openingId) || {};
+    return resolveCandidateName(r, op) || '';
+  }).filter(Boolean))).sort();
+  const emails = Array.from(new Set(responses.map(r => resolveCandidateEmail(r)).filter(Boolean))).sort();
 
-    const openingsByTitle = Array.from(new Set(openings.map(o => o.title || o.id))).sort();
-    const locations = Array.from(new Set(openings.map(o => o.location || '').filter(Boolean))).sort();
-    const departments = Array.from(new Set(openings.map(o => o.department || '').filter(Boolean))).sort();
-
-    const sources = Array.from(new Set(responses.map(r => r.source || 'unknown').filter(Boolean))).sort();
-
-    const names = Array.from(new Set(responses.map(r => {
-      const op = openings.find(o => o.id === r.openingId) || {};
-      return resolveCandidateName(r, op) || '';
-    }).filter(Boolean))).sort();
-
-    const emails = Array.from(new Set(responses.map(r => resolveCandidateEmail(r)).filter(Boolean))).sort();
-
-    return { openingsByTitle, locations, departments, sources, names, emails, openingTitles };
-  }, [openings, responses]);
-
-  // Apply combined filters to responses
-  const filteredResponses = useMemo(() => {
-    // if no filters selected at all -> return all
-    const anyFilterSelected = filters.openings.size || filters.locations.size || filters.departments.size || filters.sources.size || filters.names.size || filters.emails.size;
-    if (!anyFilterSelected) return responses;
-
-    return responses.filter(r => {
-      const op = openings.find(o => o.id === r.openingId) || {};
-      // opening title check
-      if (filters.openings.size) {
-        const title = op.title || r.openingId;
-        if (!filters.openings.has(title)) return false;
-      }
-      // location check
-      if (filters.locations.size) {
-        const loc = resolveCandidateLocation(r, op) || '';
-        if (!filters.locations.has(loc)) return false;
-      }
-      // department check
-      if (filters.departments.size) {
-        const dept = (op.department || '').toString();
-        if (!filters.departments.has(dept)) return false;
-      }
-      // source check
-      if (filters.sources.size) {
-        const src = (r.source || 'unknown').toString();
-        if (!filters.sources.has(src)) return false;
-      }
-      // name check
-      if (filters.names.size) {
-        const name = resolveCandidateName(r, op) || '';
-        if (!filters.names.has(name)) return false;
-      }
-      // email check
-      if (filters.emails.size) {
-        const email = (resolveCandidateEmail(r) || '').toString();
-        if (!filters.emails.has(email)) return false;
-      }
-      return true;
-    });
-  }, [responses, openings, filters]);
+  // Apply combined filters to responses (computed each render)
+  const anyFilterSelected = filters.openings.size || filters.locations.size || filters.departments.size || filters.sources.size || filters.names.size || filters.emails.size;
+  const filteredResponses = (!anyFilterSelected) ? responses : responses.filter(r => {
+    const op = openings.find(o => o.id === r.openingId) || {};
+    if (filters.openings.size) {
+      const title = op.title || r.openingId;
+      if (!filters.openings.has(title)) return false;
+    }
+    if (filters.locations.size) {
+      const loc = resolveCandidateLocation(r, op) || '';
+      if (!filters.locations.has(loc)) return false;
+    }
+    if (filters.departments.size) {
+      const dept = (op.department || '').toString();
+      if (!filters.departments.has(dept)) return false;
+    }
+    if (filters.sources.size) {
+      const src = (r.source || 'unknown').toString();
+      if (!filters.sources.has(src)) return false;
+    }
+    if (filters.names.size) {
+      const name = resolveCandidateName(r, op) || '';
+      if (!filters.names.has(name)) return false;
+    }
+    if (filters.emails.size) {
+      const email = (resolveCandidateEmail(r) || '').toString();
+      if (!filters.emails.has(email)) return false;
+    }
+    return true;
+  });
 
   /* -------------------------
      UI
@@ -804,7 +709,6 @@ export default function App() {
           <nav className="space-y-2">
             <div onClick={() => setActiveTab("overview")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'overview' ? 'bg-gray-800' : ''}`}>{<Icon name="menu" />} Overview</div>
             <div onClick={() => setActiveTab("jobs")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'jobs' ? 'bg-gray-800' : ''}`}>Jobs</div>
-            {/* "Form Editor" nav removed — editor is accessible from opening card */}
             <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg.Gray-800' : ''}`}>Hiring</div>
           </nav>
         </div>
@@ -932,7 +836,7 @@ export default function App() {
                           {/* Candidate name at top */}
                           <div className="text-lg font-medium">{candidateName}</div>
 
-                          {/* Opening name and location inline with small muted style (same as applied/source text) */}
+                          {/* Opening name and location inline with small muted style */}
                           <div className="text-xs text-gray-500 mt-1">
                             {opening.title || resp.openingId}
                             {candidateLocation ? ` • ${candidateLocation}` : ''}
@@ -966,7 +870,6 @@ export default function App() {
                             <option>Rejected</option>
                           </select>
 
-                          {/* Applied at moved here */}
                           <div className="text-xs text-gray-400 mt-1">Applied at: {appliedAt}</div>
                         </div>
                       </div>
@@ -988,8 +891,8 @@ export default function App() {
                       <button onClick={() => clearFilterGroup('openings')} className="text-xs text-blue-600 underline">Clear</button>
                     </div>
                     <div className="max-h-40 overflow-auto border rounded p-2">
-                      {filterOptions.openingsByTitle.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
-                      {filterOptions.openingsByTitle.map(title => (
+                      {openingsByTitle.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
+                      {openingsByTitle.map(title => (
                         <label key={title} className="flex items-center gap-2 block">
                           <input type="checkbox" checked={filters.openings.has(title)} onChange={() => toggleFilter('openings', title)} />
                           <span className="ml-1">{title}</span>
@@ -1005,8 +908,8 @@ export default function App() {
                       <button onClick={() => clearFilterGroup('locations')} className="text-xs text-blue-600 underline">Clear</button>
                     </div>
                     <div className="max-h-32 overflow-auto border rounded p-2">
-                      {filterOptions.locations.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
-                      {filterOptions.locations.map(loc => (
+                      {locations.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
+                      {locations.map(loc => (
                         <label key={loc} className="flex items-center gap-2 block">
                           <input type="checkbox" checked={filters.locations.has(loc)} onChange={() => toggleFilter('locations', loc)} />
                           <span className="ml-1">{loc}</span>
@@ -1022,8 +925,8 @@ export default function App() {
                       <button onClick={() => clearFilterGroup('departments')} className="text-xs text-blue-600 underline">Clear</button>
                     </div>
                     <div className="max-h-28 overflow-auto border rounded p-2">
-                      {filterOptions.departments.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
-                      {filterOptions.departments.map(d => (
+                      {departments.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
+                      {departments.map(d => (
                         <label key={d} className="flex items-center gap-2 block">
                           <input type="checkbox" checked={filters.departments.has(d)} onChange={() => toggleFilter('departments', d)} />
                           <span className="ml-1">{d}</span>
@@ -1039,8 +942,8 @@ export default function App() {
                       <button onClick={() => clearFilterGroup('sources')} className="text-xs text-blue-600 underline">Clear</button>
                     </div>
                     <div className="max-h-28 overflow-auto border rounded p-2">
-                      {filterOptions.sources.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
-                      {filterOptions.sources.map(s => (
+                      {sources.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
+                      {sources.map(s => (
                         <label key={s} className="flex items-center gap-2 block">
                           <input type="checkbox" checked={filters.sources.has(s)} onChange={() => toggleFilter('sources', s)} />
                           <span className="ml-1">{s}</span>
@@ -1056,8 +959,8 @@ export default function App() {
                       <button onClick={() => clearFilterGroup('names')} className="text-xs text-blue-600 underline">Clear</button>
                     </div>
                     <div className="max-h-40 overflow-auto border rounded p-2">
-                      {filterOptions.names.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
-                      {filterOptions.names.map(n => (
+                      {names.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
+                      {names.map(n => (
                         <label key={n} className="flex items-center gap-2 block">
                           <input type="checkbox" checked={filters.names.has(n)} onChange={() => toggleFilter('names', n)} />
                           <span className="ml-1">{n}</span>
@@ -1073,8 +976,8 @@ export default function App() {
                       <button onClick={() => clearFilterGroup('emails')} className="text-xs text-blue-600 underline">Clear</button>
                     </div>
                     <div className="max-h-40 overflow-auto border rounded p-2 break-all">
-                      {filterOptions.emails.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
-                      {filterOptions.emails.map(em => (
+                      {emails.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
+                      {emails.map(em => (
                         <label key={em} className="flex items-center gap-2 block">
                           <input type="checkbox" checked={filters.emails.has(em)} onChange={() => toggleFilter('emails', em)} />
                           <span className="ml-1">{em}</span>
@@ -1205,11 +1108,9 @@ export default function App() {
                   <div className="text-xs text-gray-500">Edit questions, save, publish, or share links. Core fields are mandatory and cannot be removed.</div>
                 </div>
                 <div className="flex gap-2">
-                  {/* Custom question is now only available inside form editor modal */}
                   <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
                   <button onClick={() => handleSaveForm(op.id)} className="px-3 py-1 border rounded">Save</button>
                   <button onClick={() => handlePublishForm(op.id)} className="px-3 py-1 bg-green-600 text-white rounded">Publish</button>
-                  <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-1 border rounded text-red-600">Delete Saved Form</button>
                   <button onClick={() => closeFormModal()} className="px-3 py-1 border rounded">Close</button>
                 </div>
               </div>
@@ -1298,7 +1199,7 @@ export default function App() {
         );
       })()}
 
-      {/* Custom Question Modal: ensure it sits above Form Editor modal by giving a very high inline zIndex */}
+      {/* Custom Question Modal */}
       {showCustomModal && (
         <div style={{ zIndex: 2000 }} className="fixed inset-0 bg-black/30 flex items-center justify-center">
           <div className="bg-white rounded-lg p-6 w-[560px] shadow-xl">
