@@ -1,8 +1,4 @@
 // server.js
-// Backend: OAuth (Google), file upload -> Drive, append -> Google Sheets,
-// JSON file persistence for openings -> server_data/openings.json
-// and forms -> server_data/forms.json; existing data.json kept for responses/users.
-
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -13,29 +9,43 @@ const { google } = require('googleapis');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const stream = require('stream');
-
 const { MongoClient } = require('mongodb');
+const passport = require('passport');
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+/** ---------- CONFIG ---------- **/
 const PORT = process.env.PORT || 4000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 const JWT_SECRET = process.env.JWT_SECRET || 'please-change-this-secret';
 
-// Data dirs & files
 const DATA_DIR = path.resolve(__dirname, 'server_data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const DATA_FILE = path.join(DATA_DIR, 'data.json'); // existing legacy file (responses/users)
-const OPENINGS_FILE = path.join(DATA_DIR, 'openings.json'); // NEW canonical openings storage
-const FORMS_FILE = path.join(DATA_DIR, 'forms.json'); // NEW forms storage
+const DATA_FILE = path.join(DATA_DIR, 'data.json'); // legacy responses + users
+const OPENINGS_FILE = path.join(DATA_DIR, 'openings.json');
+const FORMS_FILE = path.join(DATA_DIR, 'forms.json');
+const QUESTIONS_FILE = path.join(DATA_DIR, 'questions.json');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-// ---------- Safe file helpers (atomic write)
+const DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
+const SHEET_ID = process.env.GOOGLE_SHEET_ID;
+const SHEET_TAB = process.env.GOOGLE_SHEET_TAB || 'Sheet1'; // optional tab name
+const SCOPES = [
+  'https://www.googleapis.com/auth/drive',
+  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/spreadsheets'
+];
+
+const MONGO_URI = process.env.MONGO_URI || null;
+const MONGO_DB_NAME = process.env.MONGO_DB_NAME || 'hrtool';
+
+/** ---------- HELPERS: FILE I/O ---------- **/
 function readJsonFile(filePath, defaultVal = null) {
   try {
     if (!fs.existsSync(filePath)) return defaultVal;
@@ -51,26 +61,24 @@ function writeJsonFileAtomic(filePath, obj) {
     const tmp = filePath + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf8');
     fs.renameSync(tmp, filePath);
-    console.log(`[writeJsonFileAtomic] wrote ${filePath} (${Array.isArray(obj) ? obj.length : Object.keys(obj || {}).length})`);
+    console.log(`[writeJsonFileAtomic] wrote ${filePath}`);
   } catch (err) {
     console.error('[writeJsonFileAtomic] failed to write', filePath, err && err.stack);
     throw err;
   }
 }
 
-// ---------- Legacy data.json helpers (existing behavior)
+/** ---------- Legacy data.json helpers ---------- **/
 function readData() {
   try {
     if (!fs.existsSync(DATA_FILE)) {
       const base = { openings: [], responses: [], users: [] };
       writeJsonFileAtomic(DATA_FILE, base);
-      console.log('[readData] data.json not found -> initializing at', DATA_FILE);
+      console.log('[readData] data.json initialized at', DATA_FILE);
       return base;
     }
-    console.log('[readData] reading', DATA_FILE);
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
     const parsed = raw ? JSON.parse(raw) : { openings: [], responses: [], users: [] };
-    console.log(`[readData] counts -> openings: ${(parsed.openings||[]).length} responses: ${(parsed.responses||[]).length} users: ${(parsed.users||[]).length}`);
     return parsed;
   } catch (err) {
     console.error('[readData] error', err && err.stack);
@@ -80,53 +88,32 @@ function readData() {
 function writeData(obj) {
   try {
     writeJsonFileAtomic(DATA_FILE, obj);
-    console.log('[writeData] wrote data.json');
   } catch (err) {
     console.error('[writeData] err', err && err.message);
   }
 }
 
-// Ensure canonical openings/forms files and do a non-destructive migration if needed
+/** ---------- Ensure persistence files exist & migrate basic legacy data ---------- **/
 function ensurePersistenceFilesAndMigrate() {
-  // ensure files exist
   if (!fs.existsSync(OPENINGS_FILE)) {
     const legacy = readData();
     const legacyOpenings = Array.isArray(legacy.openings) ? legacy.openings : [];
     if (legacyOpenings.length > 0) {
-      // migrate non-destructively: copy legacy openings into openings.json
       writeJsonFileAtomic(OPENINGS_FILE, legacyOpenings);
-      console.log('[migration] migrated openings from data.json -> openings.json (count=' + legacyOpenings.length + ')');
+      console.log('[migration] migrated openings from data.json -> openings.json');
     } else {
       writeJsonFileAtomic(OPENINGS_FILE, []);
-      console.log('[init] created empty openings.json');
     }
-  } else {
-    // exists — leave as-is
-    console.log('[init] openings.json exists at', OPENINGS_FILE);
   }
-
-  if (!fs.existsSync(FORMS_FILE)) {
-    writeJsonFileAtomic(FORMS_FILE, []);
-    console.log('[init] created empty forms.json');
-  } else {
-    console.log('[init] forms.json exists at', FORMS_FILE);
-  }
+  if (!fs.existsSync(FORMS_FILE)) writeJsonFileAtomic(FORMS_FILE, []);
+  if (!fs.existsSync(QUESTIONS_FILE)) writeJsonFileAtomic(QUESTIONS_FILE, []);
 }
-
 ensurePersistenceFilesAndMigrate();
 
-// serve fallback uploads if Drive fails
+// serve fallback uploads if Drive fails (kept for compatibility but NOT used for successful flows)
 app.use('/uploads', express.static(UPLOADS_DIR));
 
-// -------------------- Google / Drive / Sheets config (unchanged) --------------------
-const DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
-const SHEET_ID = process.env.GOOGLE_SHEET_ID;
-const SCOPES = [
-  'https://www.googleapis.com/auth/drive',
-  'https://www.googleapis.com/auth/drive.file',
-  'https://www.googleapis.com/auth/spreadsheets'
-];
-
+/** ---------- Google Drive & Sheets helpers ---------- **/
 let googleAuthInstance = null;
 function getAuthClient() {
   if (googleAuthInstance) return googleAuthInstance;
@@ -143,50 +130,61 @@ function getAuthClient() {
   }
   throw new Error('No Google service account configured');
 }
-async function getDriveService() { const auth = getAuthClient(); const client = await auth.getClient(); return google.drive({ version: 'v3', auth: client }); }
-async function getSheetsService() { const auth = getAuthClient(); const client = await auth.getClient(); return google.sheets({ version: 'v4', auth: client }); }
-async function uploadToDrive(fileBuffer, filename, mimeType = 'application/octet-stream') {
-  if (!DRIVE_FOLDER_ID) throw new Error('DRIVE_FOLDER_ID not set');
-  const drive = await getDriveService();
-  const bufferStream = new stream.PassThrough(); bufferStream.end(Buffer.isBuffer(fileBuffer) ? fileBuffer : Buffer.from(fileBuffer));
-  const created = await drive.files.create({
-    requestBody: { name: filename, parents: [DRIVE_FOLDER_ID] },
-    media: { mimeType, body: bufferStream },
-    supportsAllDrives: true,
-    fields: 'id, webViewLink, webContentLink'
-  });
-  const fileId = created.data && created.data.id;
-  if (!fileId) throw new Error('Drive returned no file id');
-  try {
-    await drive.permissions.create({ fileId, requestBody: { role: 'reader', type: 'anyone' }, supportsAllDrives: true });
-  } catch (err) {
-    console.warn('drive.permissions.create failed (org policy?)', err && err.message);
-  }
-  try {
-    const meta = await drive.files.get({ fileId, fields: 'id, webViewLink, webContentLink' });
-    return meta.data.webViewLink || meta.data.webContentLink || `https://drive.google.com/file/d/${fileId}/view`;
-  } catch (err) {
-    return `https://drive.google.com/file/d/${fileId}/view`;
-  }
+async function getDriveService() {
+  const auth = getAuthClient();
+  const client = await auth.getClient();
+  return google.drive({ version: 'v3', auth: client });
 }
-async function appendToSheet(sheetId, valuesArray) {
+async function getSheetsService() {
+  const auth = getAuthClient();
+  const client = await auth.getClient();
+  return google.sheets({ version: 'v4', auth: client });
+}
+
+// Append row and return updatedRange if available
+async function appendToSheetReturnRange(sheetId, tab, valuesArray) {
   if (!sheetId) throw new Error('GOOGLE_SHEET_ID not set');
   const sheets = await getSheetsService();
+  const range = `${tab}!A1`;
   const res = await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: 'Sheet1!A1',
+    range,
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [valuesArray] }
   });
-  return res.status === 200 || res.status === 201;
+  const updatedRange = res.data && res.data.updates && res.data.updates.updatedRange;
+  return updatedRange || null;
 }
 
-// Multer (memory)
+// Update a specific A1 range (single row)
+async function updateSheetRow(sheetId, rangeA1, valuesArray) {
+  if (!sheetId) throw new Error('GOOGLE_SHEET_ID not set');
+  const sheets = await getSheetsService();
+  const res = await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: rangeA1,
+    valueInputOption: 'RAW',
+    requestBody: { values: [valuesArray] }
+  });
+  return res.data;
+}
+
+// read a range
+async function readSheetRange(sheetId, rangeA1) {
+  const sheets = await getSheetsService();
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: rangeA1 });
+  return res.data && res.data.values ? res.data.values : [];
+}
+
+/** ---------- Multer / upload ---------- **/
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
-// JWT helpers & auth middleware (unchanged)
-function signUserToken(user) { const payload = { id: user.id, email: user.email, role: user.role || 'recruiter' }; return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' }); }
+/** ---------- JWT helpers & auth middleware ---------- **/
+function signUserToken(user) {
+  const payload = { id: user.id, email: user.email, role: user.role || 'recruiter' };
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
+}
 function authMiddleware(req, res, next) {
   const auth = req.headers.authorization;
   if (!auth) return res.status(401).json({ error: 'missing_auth' });
@@ -202,9 +200,7 @@ function authMiddleware(req, res, next) {
   }
 }
 
-// Passport Google OAuth (unchanged)
-const passport = require('passport');
-const GoogleStrategy = require('passport-google-oauth20').Strategy;
+/** ---------- Passport Google OAuth (unchanged behavior) ---------- **/
 if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET) {
   passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_OAUTH_CLIENT_ID,
@@ -226,12 +222,7 @@ if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET
   console.warn('Google OAuth not configured: GOOGLE_OAUTH_CLIENT_ID/SECRET missing');
 }
 
-// ---------------------------
-// Robust MongoDB connection + helpers
-// ---------------------------
-const MONGO_URI = process.env.MONGO_URI || null;
-const MONGO_DB_NAME = process.env.MONGO_DB_NAME || 'hrtool';
-
+/** ---------- Robust Mongo connection ---------- **/
 let mongoClientInstance = null;
 let db = null;
 
@@ -240,50 +231,43 @@ async function connectMongo() {
     console.log('[mongo] MONGO_URI not set — skipping MongoDB connection (file fallback enabled)');
     return null;
   }
-
   if (db) return db;
-
   try {
     console.log('[mongo] creating MongoClient...');
     mongoClientInstance = new MongoClient(MONGO_URI, {
-      // modern driver: omit deprecated options
       serverSelectionTimeoutMS: 15000,
       connectTimeoutMS: 15000,
       tls: true
     });
-
     console.log('[mongo] attempting to connect to Atlas...');
     await mongoClientInstance.connect();
-
     db = mongoClientInstance.db(MONGO_DB_NAME || undefined);
     console.log('✅ Connected to MongoDB:', db.databaseName || '(default from URI)');
 
-    // create lightweight indexes non-blocking (best-effort)
+    // create helpful indexes
     await Promise.allSettled([
       db.collection('openings').createIndex({ id: 1 }, { unique: true, sparse: true }),
       db.collection('forms').createIndex({ id: 1 }, { unique: true, sparse: true }),
-      db.collection('responses').createIndex({ id: 1 }, { unique: true, sparse: true })
+      db.collection('responses').createIndex({ id: 1 }, { unique: true, sparse: true }),
+      db.collection('questions').createIndex({ id: 1 }, { unique: true, sparse: true })
     ]);
 
     return db;
   } catch (err) {
     console.error('[mongo] Failed to connect to MongoDB:', err && (err.stack || err.message));
     db = null;
-    try { if (mongoClientInstance) await mongoClientInstance.close(); } catch (e) { /* ignore */ }
+    try { if (mongoClientInstance) await mongoClientInstance.close(); } catch(e){}
     mongoClientInstance = null;
     throw err;
   }
 }
 
-// Helper: normalize doc (strip _id)
-function normalizeDoc(doc) {
-  if (!doc) return doc;
-  const copy = { ...doc };
-  delete copy._id;
-  return copy;
-}
+/** ---------- Normalizers ---------- **/
+function normalizeDoc(doc) { if (!doc) return doc; const copy = { ...doc }; delete copy._id; return copy; }
 
-// OPENINGS store helpers
+/** ---------- STORE HELPERS (openings/forms/questions/responses) ---------- **/
+
+/* OPENINGS */
 async function listOpeningsFromStore() {
   if (db) {
     const rows = await db.collection('openings').find({}).sort({ createdAt: -1 }).toArray();
@@ -292,18 +276,12 @@ async function listOpeningsFromStore() {
   return readJsonFile(OPENINGS_FILE, []);
 }
 async function getOpeningFromStore(id) {
-  if (db) {
-    const doc = await db.collection('openings').findOne({ id });
-    return normalizeDoc(doc);
-  }
+  if (db) return normalizeDoc(await db.collection('openings').findOne({ id }));
   const arr = readJsonFile(OPENINGS_FILE, []);
   return arr.find(o => o.id === id);
 }
 async function createOpeningInStore(op) {
-  if (db) {
-    await db.collection('openings').insertOne(op);
-    return op;
-  }
+  if (db) { await db.collection('openings').insertOne(op); return op; }
   const arr = readJsonFile(OPENINGS_FILE, []);
   arr.unshift(op);
   writeJsonFileAtomic(OPENINGS_FILE, arr);
@@ -312,8 +290,7 @@ async function createOpeningInStore(op) {
 async function updateOpeningInStore(id, fields) {
   if (db) {
     await db.collection('openings').updateOne({ id }, { $set: fields });
-    const doc = await db.collection('openings').findOne({ id });
-    return normalizeDoc(doc);
+    return normalizeDoc(await db.collection('openings').findOne({ id }));
   }
   const arr = readJsonFile(OPENINGS_FILE, []);
   const idx = arr.findIndex(o => o.id === id);
@@ -335,22 +312,17 @@ async function deleteOpeningInStore(id) {
     removed = arr.length - newArr.length;
     writeJsonFileAtomic(OPENINGS_FILE, newArr);
   }
-
-  // Ensure file forms are cleaned too
   const forms = readJsonFile(FORMS_FILE, []);
   const newForms = forms.filter(f => f.openingId !== id);
-  const deletedFormsCount = forms.length - newForms.length;
-  if (deletedFormsCount > 0) writeJsonFileAtomic(FORMS_FILE, newForms);
+  if (newForms.length !== forms.length) writeJsonFileAtomic(FORMS_FILE, newForms);
 
-  // legacy responses in data.json
   const data = readData();
   data.responses = (data.responses || []).filter(r => r.openingId !== id);
   writeData(data);
-
-  return { ok: true, removedOpenings: removed, deletedFormsCount };
+  return { ok: true, removedOpenings: removed };
 }
 
-// FORMS store helpers
+/* FORMS */
 async function listFormsFromStore(openingId) {
   if (db) {
     const q = openingId ? { openingId } : {};
@@ -361,18 +333,12 @@ async function listFormsFromStore(openingId) {
   return openingId ? arr.filter(f => f.openingId === openingId) : arr;
 }
 async function getFormFromStore(id) {
-  if (db) {
-    const doc = await db.collection('forms').findOne({ id });
-    return normalizeDoc(doc);
-  }
+  if (db) return normalizeDoc(await db.collection('forms').findOne({ id }));
   const arr = readJsonFile(FORMS_FILE, []);
   return arr.find(f => f.id === id);
 }
 async function createFormInStore(form) {
-  if (db) {
-    await db.collection('forms').insertOne(form);
-    return form;
-  }
+  if (db) { await db.collection('forms').insertOne(form); return form; }
   const arr = readJsonFile(FORMS_FILE, []);
   arr.push(form);
   writeJsonFileAtomic(FORMS_FILE, arr);
@@ -381,13 +347,12 @@ async function createFormInStore(form) {
 async function updateFormInStore(id, patch) {
   if (db) {
     await db.collection('forms').updateOne({ id }, { $set: patch });
-    const doc = await db.collection('forms').findOne({ id });
-    return normalizeDoc(doc);
+    return normalizeDoc(await db.collection('forms').findOne({ id }));
   }
   const arr = readJsonFile(FORMS_FILE, []);
   const idx = arr.findIndex(f => f.id === id);
   if (idx === -1) return null;
-  arr[idx] = { ...arr[idx], ...patch };
+  arr[idx] = { ...arr[idx], ...patch, updated_at: new Date().toISOString() };
   writeJsonFileAtomic(FORMS_FILE, arr);
   return arr[idx];
 }
@@ -403,11 +368,87 @@ async function deleteFormInStore(id) {
   return { ok: true, deleted: arr.length - newArr.length };
 }
 
-/* -------------------------
-   OAuth routes, user endpoints remain unchanged (using legacy data.json)
-   ------------------------- */
+/* QUESTIONS */
+async function listQuestionsFromStore() {
+  if (db) {
+    const rows = await db.collection('questions').find({}).sort({ createdAt: -1 }).toArray();
+    return rows.map(normalizeDoc);
+  }
+  return readJsonFile(QUESTIONS_FILE, []);
+}
+async function getQuestionFromStore(id) {
+  if (db) return normalizeDoc(await db.collection('questions').findOne({ id }));
+  const arr = readJsonFile(QUESTIONS_FILE, []);
+  return arr.find(q => q.id === id);
+}
+async function createQuestionInStore(q) {
+  if (db) { await db.collection('questions').insertOne(q); return q; }
+  const arr = readJsonFile(QUESTIONS_FILE, []);
+  arr.unshift(q);
+  writeJsonFileAtomic(QUESTIONS_FILE, arr);
+  return q;
+}
+async function updateQuestionInStore(id, patch) {
+  if (db) {
+    await db.collection('questions').updateOne({ id }, { $set: patch });
+    return normalizeDoc(await db.collection('questions').findOne({ id }));
+  }
+  const arr = readJsonFile(QUESTIONS_FILE, []);
+  const idx = arr.findIndex(q => q.id === id);
+  if (idx === -1) return null;
+  arr[idx] = { ...arr[idx], ...patch, updatedAt: new Date().toISOString() };
+  writeJsonFileAtomic(QUESTIONS_FILE, arr);
+  return arr[idx];
+}
+async function deleteQuestionInStore(id) {
+  if (db) {
+    const res = await db.collection('questions').deleteOne({ id });
+    return { ok: true, deleted: res.deletedCount || 0 };
+  }
+  const arr = readJsonFile(QUESTIONS_FILE, []);
+  const newArr = arr.filter(q => q.id !== id);
+  if (newArr.length === arr.length) return { ok: false, deleted: 0 };
+  writeJsonFileAtomic(QUESTIONS_FILE, newArr);
+  return { ok: true, deleted: arr.length - newArr.length };
+}
 
-// OAuth routes
+/* RESPONSES */
+async function listResponsesFromStore() {
+  if (db) {
+    const rows = await db.collection('responses').find({}).sort({ createdAt: -1 }).toArray();
+    return rows.map(normalizeDoc);
+  }
+  const data = readData();
+  return data.responses || [];
+}
+async function getResponseFromStore(id) {
+  if (db) return normalizeDoc(await db.collection('responses').findOne({ id }));
+  const data = readData();
+  return (data.responses || []).find(r => r.id === id);
+}
+async function createResponseInStore(resp) {
+  if (db) { await db.collection('responses').insertOne(resp); return resp; }
+  const data = readData();
+  data.responses.unshift(resp);
+  writeData(data);
+  return resp;
+}
+async function updateResponseInStore(id, patch) {
+  if (db) {
+    await db.collection('responses').updateOne({ id }, { $set: patch });
+    return normalizeDoc(await db.collection('responses').findOne({ id }));
+  }
+  const data = readData();
+  const idx = (data.responses || []).findIndex(r => r.id === id);
+  if (idx === -1) return null;
+  data.responses[idx] = { ...data.responses[idx], ...patch };
+  writeData(data);
+  return data.responses[idx];
+}
+
+/** ---------- ROUTES ---------- **/
+
+// OAuth
 app.get('/auth/google', (req, res, next) => {
   if (!passport._strategy('google')) return res.status(500).json({ error: 'oauth_not_configured' });
   passport.authenticate('google', { scope: ['profile', 'email'] })(req, res, next);
@@ -423,7 +464,7 @@ app.get('/auth/google/callback', (req, res, next) => {
   })(req, res, next);
 });
 
-// API: get current user
+// api/me
 app.get('/api/me', authMiddleware, (req, res) => {
   const data = readData();
   const user = data.users.find(u => u.id === req.user.id || u.email === req.user.email);
@@ -431,230 +472,203 @@ app.get('/api/me', authMiddleware, (req, res) => {
   return res.json({ id: user.id, email: user.email, name: user.name, role: user.role });
 });
 
-/* -----------------------------
-   Openings endpoints (protected)
-   use DB if available, else file fallback
-   ----------------------------- */
-
-// GET all openings (protected)
+/* Openings CRUD (protected) */
 app.get('/api/openings', authMiddleware, async (req, res) => {
-  try {
-    const openings = await listOpeningsFromStore();
-    return res.json(openings || []);
-  } catch (err) {
-    console.error('GET /api/openings error', err && err.message);
-    return res.status(500).json({ error: 'server_error' });
-  }
+  try { const rows = await listOpeningsFromStore(); return res.json(rows || []); }
+  catch(err){ console.error('GET /api/openings', err); return res.status(500).json({ error: 'server_error' }); }
 });
-
-// GET single opening (protected)
 app.get('/api/openings/:id', authMiddleware, async (req, res) => {
-  try {
-    const item = await getOpeningFromStore(req.params.id);
-    if (!item) return res.status(404).json({ error: 'opening_not_found' });
-    return res.json(item);
-  } catch (err) {
-    console.error('GET /api/openings/:id error', err && err.message);
-    return res.status(500).json({ error: 'server_error' });
-  }
+  try { const item = await getOpeningFromStore(req.params.id); if (!item) return res.status(404).json({ error: 'opening_not_found' }); return res.json(item); }
+  catch(err){ console.error('GET /api/openings/:id', err); return res.status(500).json({ error: 'server_error' }); }
 });
-
-// CREATE opening (protected)
 app.post('/api/openings', authMiddleware, async (req, res) => {
   try {
     const payload = req.body || {};
-    const op = {
-      id: `op_${Date.now()}`,
-      title: payload.title || 'Untitled',
-      location: payload.location || 'Remote',
-      department: payload.department || '',
-      preferredSources: Array.isArray(payload.preferredSources) ? payload.preferredSources : (payload.preferredSources ? payload.preferredSources.split(',') : []),
-      durationMins: payload.durationMins || 30,
-      schema: payload.schema || null,
-      createdAt: new Date().toISOString()
-    };
+    const op = { id: `op_${Date.now()}`, title: payload.title || 'Untitled', location: payload.location || 'Remote', department: payload.department || '', preferredSources: Array.isArray(payload.preferredSources) ? payload.preferredSources : (payload.preferredSources ? payload.preferredSources.split(',') : []), durationMins: payload.durationMins || 30, schema: payload.schema || null, createdAt: new Date().toISOString() };
     await createOpeningInStore(op);
-    console.log('[api POST /api/openings] created', op.id);
     return res.json(op);
-  } catch (err) {
-    console.error('POST /api/openings error', err && err.message);
-    return res.status(500).json({ error: 'server_error' });
-  }
+  } catch (err) { console.error('POST /api/openings', err); return res.status(500).json({ error: 'server_error' }); }
 });
-
-// UPDATE opening (protected)
 app.put('/api/openings/:id', authMiddleware, async (req, res) => {
   try {
     const id = req.params.id;
-    const fields = {};
-    ['title','location','department','preferredSources','durationMins','schema'].forEach(f => { if (req.body[f] !== undefined) fields[f] = req.body[f]; });
+    const fields = {}; ['title','location','department','preferredSources','durationMins','schema'].forEach(f => { if (req.body[f] !== undefined) fields[f] = req.body[f]; });
     const updated = await updateOpeningInStore(id, fields);
     if (!updated) return res.status(404).json({ error: 'opening_not_found' });
     return res.json(updated);
-  } catch (err) {
-    console.error('PUT /api/openings/:id error', err && err.message);
-    return res.status(500).json({ error: 'server_error' });
-  }
+  } catch (err) { console.error('PUT /api/openings/:id', err); return res.status(500).json({ error: 'server_error' }); }
 });
-
-// DELETE opening (protected) — cascade delete forms
 app.delete('/api/openings/:id', authMiddleware, async (req, res) => {
-  try {
-    const id = req.params.id;
-    const result = await deleteOpeningInStore(id);
-    return res.json(result);
-  } catch (err) {
-    console.error('DELETE /api/openings/:id error', err && err.message);
-    return res.status(500).json({ error: 'server_error' });
-  }
+  try { const id = req.params.id; const result = await deleteOpeningInStore(id); return res.json(result); }
+  catch (err) { console.error('DELETE /api/openings/:id', err); return res.status(500).json({ error: 'server_error' }); }
 });
 
-/* -----------------------------
-   Forms endpoints (protected)
-   ----------------------------- */
-
-// GET all forms (optionally filter by openingId)
+/* Forms endpoints */
 app.get('/api/forms', authMiddleware, async (req, res) => {
-  try {
-    const { openingId } = req.query;
-    const forms = await listFormsFromStore(openingId);
-    return res.json(forms || []);
-  } catch (err) {
-    console.error('GET /api/forms error', err && err.message);
-    return res.status(500).json({ error: 'server_error' });
-  }
+  try { const rows = await listFormsFromStore(req.query.openingId); return res.json(rows || []); }
+  catch(err){ console.error('GET /api/forms', err); return res.status(500).json({ error: 'server_error' }); }
 });
-
-// GET single form
 app.get('/api/forms/:id', authMiddleware, async (req, res) => {
-  try {
-    const f = await getFormFromStore(req.params.id);
-    if (!f) return res.status(404).json({ error: 'form_not_found' });
-    return res.json(f);
-  } catch (err) {
-    console.error('GET /api/forms/:id error', err && err.message);
-    return res.status(500).json({ error: 'server_error' });
-  }
+  try { const f = await getFormFromStore(req.params.id); if (!f) return res.status(404).json({ error: 'form_not_found' }); return res.json(f); }
+  catch(err){ console.error('GET /api/forms/:id', err); return res.status(500).json({ error: 'server_error' }); }
 });
-
-// CREATE form
 app.post('/api/forms', authMiddleware, async (req, res) => {
   try {
     const { openingId, data } = req.body || {};
     if (!openingId) return res.status(400).json({ error: 'openingId_required' });
-    const opening = await getOpeningFromStore(openingId);
-    if (!opening) return res.status(400).json({ error: 'invalid_openingId' });
+    const op = await getOpeningFromStore(openingId);
+    if (!op) return res.status(400).json({ error: 'invalid_openingId' });
     const id = `form_${Date.now()}`;
     const now = new Date().toISOString();
     const newForm = { id, openingId, data: data || {}, created_at: now, updated_at: now };
     await createFormInStore(newForm);
-    console.log('[api POST /api/forms] created', id);
     return res.status(201).json(newForm);
-  } catch (err) {
-    console.error('POST /api/forms error', err && err.message);
-    return res.status(500).json({ error: 'server_error' });
-  }
+  } catch (err) { console.error('POST /api/forms', err); return res.status(500).json({ error: 'server_error' }); }
 });
-
-// UPDATE form
 app.put('/api/forms/:id', authMiddleware, async (req, res) => {
   try {
     const id = req.params.id;
-    const patch = {};
-    if (req.body.data !== undefined) patch.data = req.body.data;
-    patch.updated_at = new Date().toISOString();
+    const patch = req.body.data !== undefined ? { data: req.body.data, updated_at: new Date().toISOString() } : { updated_at: new Date().toISOString() };
     const updated = await updateFormInStore(id, patch);
     if (!updated) return res.status(404).json({ error: 'form_not_found' });
-    console.log('[api PUT /api/forms/:id] updated', id);
     return res.json(updated);
-  } catch (err) {
-    console.error('PUT /api/forms/:id error', err && err.message);
-    return res.status(500).json({ error: 'server_error' });
-  }
+  } catch (err) { console.error('PUT /api/forms/:id', err); return res.status(500).json({ error: 'server_error' }); }
+});
+app.delete('/api/forms/:id', authMiddleware, async (req, res) => {
+  try { const id = req.params.id; const result = await deleteFormInStore(id); return res.json(result); }
+  catch (err) { console.error('DELETE /api/forms/:id', err); return res.status(500).json({ error: 'server_error' }); }
 });
 
-// DELETE form
-app.delete('/api/forms/:id', authMiddleware, async (req, res) => {
+// Attach an existing question to a form (creates reference entry)
+app.post('/api/forms/:id/add-question', authMiddleware, async (req, res) => {
+  try {
+    const formId = req.params.id;
+    const { questionId, position, localLabel, localRequired } = req.body;
+    if (!questionId) return res.status(400).json({ error: 'questionId_required' });
+    const form = await getFormFromStore(formId);
+    if (!form) return res.status(404).json({ error: 'form_not_found' });
+    form.data = form.data || {}; form.data.questions = form.data.questions || [];
+    const entry = { questionId, localLabel: localLabel || null, localRequired: typeof localRequired === 'boolean' ? localRequired : null };
+    if (position === undefined || position === null || position >= form.data.questions.length) form.data.questions.push(entry);
+    else form.data.questions.splice(position, 0, entry);
+    await updateFormInStore(form.id, { data: form.data, updated_at: new Date().toISOString() });
+    return res.json({ ok: true, form });
+  } catch (err) { console.error('POST /api/forms/:id/add-question', err); return res.status(500).json({ error: 'server_error' }); }
+});
+
+/* Questions endpoints */
+app.get('/api/questions', authMiddleware, async (req, res) => {
+  try { const rows = await listQuestionsFromStore(); return res.json(rows || []); }
+  catch (err) { console.error('GET /api/questions', err); return res.status(500).json({ error: 'server_error' }); }
+});
+app.post('/api/questions', authMiddleware, async (req, res) => {
+  try {
+    const payload = req.body || {};
+    if (!payload.type || !payload.label) return res.status(400).json({ error: 'type_and_label_required' });
+    const q = { id: `q_${Date.now()}`, type: payload.type, label: payload.label, required: !!payload.required, options: Array.isArray(payload.options) ? payload.options : (payload.options ? payload.options.split('\n').map(s=>s.trim()).filter(Boolean) : []), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), meta: payload.meta || {} };
+    await createQuestionInStore(q);
+    return res.status(201).json(q);
+  } catch (err) { console.error('POST /api/questions', err); return res.status(500).json({ error: 'server_error' }); }
+});
+app.put('/api/questions/:id', authMiddleware, async (req, res) => {
+  try { const id = req.params.id; const patch = { ...req.body, updatedAt: new Date().toISOString() }; const updated = await updateQuestionInStore(id, patch); if (!updated) return res.status(404).json({ error: 'question_not_found' }); return res.json(updated); }
+  catch (err) { console.error('PUT /api/questions/:id', err); return res.status(500).json({ error: 'server_error' }); }
+});
+app.delete('/api/questions/:id', authMiddleware, async (req, res) => {
   try {
     const id = req.params.id;
-    const result = await deleteFormInStore(id);
-    if (!result.ok) return res.status(404).json({ error: 'form_not_found' });
-    console.log('[api DELETE /api/forms/:id] deleted', id);
+    const forms = await listFormsFromStore();
+    const used = forms.some(f => (f.data && Array.isArray(f.data.questions) && f.data.questions.some(q => q.questionId === id)));
+    if (used) return res.status(400).json({ error: 'question_in_use' });
+    const result = await deleteQuestionInStore(id);
     return res.json(result);
-  } catch (err) {
-    console.error('DELETE /api/forms/:id error', err && err.message);
-    return res.status(500).json({ error: 'server_error' });
-  }
+  } catch (err) { console.error('DELETE /api/questions/:id', err); return res.status(500).json({ error: 'server_error' }); }
 });
 
-/* -------------------------
-   Responses (protected) - legacy stored in data.json and optionally in DB
-   ------------------------- */
+/* Responses endpoints */
 app.get('/api/responses', authMiddleware, async (req, res) => {
+  try { const rows = await listResponsesFromStore(); return res.json(rows || []); }
+  catch (err) { console.error('GET /api/responses', err); return res.status(500).json({ error: 'server_error' }); }
+});
+app.get('/api/responses/:id', authMiddleware, async (req, res) => {
+  try { const r = await getResponseFromStore(req.params.id); if (!r) return res.status(404).json({ error: 'response_not_found' }); return res.json(r); }
+  catch (err) { console.error('GET /api/responses/:id', err); return res.status(500).json({ error: 'server_error' }); }
+});
+
+// Update a candidate's status (persist to DB/files + update sheet row if known)
+app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
   try {
+    const id = req.params.id;
+    const { status } = req.body;
+    if (!status) return res.status(400).json({ error: 'missing_status' });
+
+    let updatedResp = null;
+    // Update in DB or file
+    const now = new Date().toISOString();
     if (db) {
-      const rows = await db.collection('responses').find({}).sort({ createdAt: -1 }).toArray();
-      return res.json(rows.map(normalizeDoc));
+      const updateRes = await db.collection('responses').findOneAndUpdate({ id }, { $set: { status, updatedAt: now } }, { returnDocument: 'after' });
+      if (!updateRes.value) return res.status(404).json({ error: 'response_not_found' });
+      updatedResp = normalizeDoc(updateRes.value);
+    } else {
+      const data = readData();
+      const idx = (data.responses || []).findIndex(r => r.id === id);
+      if (idx === -1) return res.status(404).json({ error: 'response_not_found' });
+      data.responses[idx].status = status;
+      data.responses[idx].updatedAt = now;
+      writeData(data);
+      updatedResp = data.responses[idx];
     }
-    const data = readData();
-    return res.json(data.responses || []);
+
+    // If sheetRange stored, update that row in Google Sheet
+    if (SHEET_ID && updatedResp && updatedResp.sheetRange) {
+      try {
+        // Determine the sheet tab from sheetRange (e.g. "Sheet1!A5:F5" => "Sheet1")
+        const sheetRange = updatedResp.sheetRange;
+        const sheetName = sheetRange.split('!')[0];
+        // read header row to find 'Status' column
+        const header = (await readSheetRange(SHEET_ID, `${sheetName}!1:1`))[0] || [];
+        let statusIndex = header.findIndex(h => (h || '').toString().toLowerCase().trim() === 'status');
+        // read existing row values
+        const existingRow = (await readSheetRange(SHEET_ID, sheetRange))[0] || [];
+        if (statusIndex === -1) {
+          // append status as next column (extend existingRow)
+          statusIndex = existingRow.length; // 0-based index
+        }
+        while (existingRow.length <= statusIndex) existingRow.push('');
+        existingRow[statusIndex] = status;
+        // convert statusIndex (0-based) to A1 range columns: we will update the exact same range (sheetRange)
+        await updateSheetRow(SHEET_ID, sheetRange, existingRow);
+        console.log(`[api] updated sheet ${sheetRange} with status=${status}`);
+      } catch (err) {
+        console.error('Failed to update Google Sheet row for response', id, err && err.message);
+        return res.status(200).json({ ok: true, updatedResp, sheetUpdate: 'failed', sheetError: (err && err.message) });
+      }
+    }
+
+    return res.json({ ok: true, updatedResp });
   } catch (err) {
-    console.error('GET /api/responses error', err && err.message);
-    return res.status(500).json({ error: 'server_error' });
+    console.error('PUT /api/responses/:id/status error', err && err.stack);
+    return res.status(500).json({ error: 'server_error', message: err?.message || 'unknown' });
   }
 });
 
-/* -------------------------
-   Public endpoints for openings & schema (no auth)
-   ------------------------- */
-
-// List public openings
+/* Public endpoints for openings/schema - work with OPENINGS_FILE or DB */
 app.get('/public/openings', async (req, res) => {
-  try {
-    const openings = await listOpeningsFromStore();
-    return res.json(openings || []);
-  } catch (err) {
-    console.error('GET /public/openings error', err);
-    return res.status(500).json({ error: 'server_error' });
-  }
+  try { const rows = await listOpeningsFromStore(); return res.json(rows || []); }
+  catch (err) { console.error('GET /public/openings', err); return res.status(500).json({ error: 'server_error' }); }
 });
-
-// Create opening publicly (no auth)
 app.post('/public/openings', async (req, res) => {
   try {
     const payload = req.body || {};
-    const op = {
-      id: `op_${Date.now()}`,
-      title: payload.title || 'Untitled',
-      location: payload.location || 'Remote',
-      department: payload.department || '',
-      preferredSources: Array.isArray(payload.preferredSources) ? payload.preferredSources : (payload.preferredSources ? payload.preferredSources.split(',') : []),
-      durationMins: payload.durationMins || 30,
-      schema: payload.schema || null,
-      createdAt: new Date().toISOString()
-    };
+    const op = { id: `op_${Date.now()}`, title: payload.title || 'Untitled', location: payload.location || 'Remote', department: payload.department || '', preferredSources: Array.isArray(payload.preferredSources) ? payload.preferredSources : (payload.preferredSources ? payload.preferredSources.split(',') : []), durationMins: payload.durationMins || 30, schema: payload.schema || null, createdAt: new Date().toISOString() };
     await createOpeningInStore(op);
-    console.log('[public POST /public/openings] created', op.id);
     return res.json(op);
-  } catch (err) {
-    console.error('POST /public/openings error', err && err.message);
-    return res.status(500).json({ error: 'server_error' });
-  }
+  } catch (err) { console.error('POST /public/openings', err); return res.status(500).json({ error: 'server_error' }); }
 });
-
-// Get opening schema (public)
 app.get('/public/openings/:id/schema', async (req, res) => {
-  try {
-    const op = await getOpeningFromStore(req.params.id);
-    if (!op) return res.status(404).json({ error: 'opening_not_found' });
-    return res.json({ schema: op.schema || null });
-  } catch (err) {
-    console.error('GET /public/openings/:id/schema error', err && err.message);
-    return res.status(500).json({ error: 'server_error' });
-  }
+  try { const op = await getOpeningFromStore(req.params.id); if (!op) return res.status(404).json({ error: 'opening_not_found' }); return res.json({ schema: op.schema || null }); }
+  catch (err) { console.error('GET /public/openings/:id/schema', err); return res.status(500).json({ error: 'server_error' }); }
 });
-
-// Save opening schema (public)
 app.post('/public/openings/:id/schema', async (req, res) => {
   try {
     const id = req.params.id;
@@ -662,109 +676,95 @@ app.post('/public/openings/:id/schema', async (req, res) => {
     if (!schema || !Array.isArray(schema)) return res.status(400).json({ error: 'missing_or_invalid_schema' });
     const op = await getOpeningFromStore(id);
     if (!op) return res.status(404).json({ error: 'opening_not_found' });
-    op.schema = schema;
-    op.updatedAt = new Date().toISOString();
+    op.schema = schema; op.updatedAt = new Date().toISOString();
     await updateOpeningInStore(id, { schema: op.schema, updatedAt: op.updatedAt });
-    console.log('[public POST /public/openings/:id/schema] saved schema for', id);
     return res.json({ ok: true, schema: op.schema });
-  } catch (err) {
-    console.error('POST /public/openings/:id/schema error', err && err.message);
-    return res.status(500).json({ error: 'server_error' });
-  }
+  } catch (err) { console.error('POST /public/openings/:id/schema', err); return res.status(500).json({ error: 'server_error' }); }
 });
 
-// Delete opening publicly (no auth) — cascade delete forms (careful!)
-app.delete('/public/openings/:id', async (req, res) => {
-  try {
-    const id = req.params.id;
-    const result = await deleteOpeningInStore(id);
-    console.log(`[public DELETE /public/openings/${id}] removed opening`);
-    return res.json(result);
-  } catch (err) {
-    console.error('DELETE /public/openings/:id error', err && err.message);
-    return res.status(500).json({ error: 'server_error' });
-  }
-});
-
-/* -------------------------
-   Public apply endpoint -> upload resume to Drive, append to Sheet, persist locally (unchanged behavior)
-   ------------------------- */
+/* Apply endpoint - store response, upload resume to Drive (strict: no local fallback), append to Sheet and record sheetRange */
 app.post('/api/apply', upload.single('resume'), async (req, res) => {
   try {
     const openingId = req.query.opening || req.body.opening;
     const src = req.query.src || req.body.src || 'unknown';
     if (!openingId) return res.status(400).json({ error: 'missing opening id' });
 
-    // find opening from DB or files/legacy
     const opening = await getOpeningFromStore(openingId) || readData().openings.find(o => o.id === openingId);
     const openingTitle = opening ? opening.title : null;
 
-    // Resume upload to Drive (or fallback to local)
+    // resume upload (strict: require Drive upload to succeed)
     let resumeLink = null;
     if (req.file && req.file.buffer) {
       const filename = `${Date.now()}_${(req.file.originalname || 'resume')}`;
+
+      // If DRIVE_FOLDER_ID not configured, return config error to caller
+      if (!DRIVE_FOLDER_ID) {
+        console.error('Drive folder ID not set; cannot upload resume.');
+        return res.status(500).json({ error: 'drive_config_missing', message: 'Server is not configured to upload resumes to Google Drive. Please contact the administrator.' });
+      }
+
       try {
-        resumeLink = await uploadToDrive(req.file.buffer, filename, req.file.mimetype || 'application/octet-stream');
-        console.log('Drive upload success, resumeLink=', resumeLink);
+        // Upload to Drive and set public read permission (best-effort)
+        const bufferStream = new stream.PassThrough(); bufferStream.end(req.file.buffer);
+        const drive = await getDriveService();
+        const created = await drive.files.create({
+          requestBody: { name: filename, parents: [DRIVE_FOLDER_ID] },
+          media: { mimeType: req.file.mimetype || 'application/octet-stream', body: bufferStream },
+          supportsAllDrives: true,
+          fields: 'id, webViewLink, webContentLink'
+        });
+
+        const fileId = created.data && created.data.id;
+        if (!fileId) {
+          throw new Error('no_file_id_returned');
+        }
+
+        // make file readable by anyone (best-effort; ignore permission errors but still return link)
+        try {
+          await drive.permissions.create({ fileId, requestBody: { role: 'reader', type: 'anyone' }, supportsAllDrives: true });
+        } catch (permErr) {
+          console.warn('drive.permissions.create failed (may be org policy) - continuing, permission error:', permErr && permErr.message);
+        }
+
+        // fetch metadata to pick best link
+        const meta = await drive.files.get({ fileId, fields: 'id, webViewLink, webContentLink' }).catch(() => null);
+        resumeLink = (meta && (meta.data && (meta.data.webViewLink || meta.data.webContentLink))) || `https://drive.google.com/file/d/${fileId}/view`;
+        console.log('Drive upload success:', resumeLink);
       } catch (err) {
         console.error('Drive upload failed:', err && (err.stack || err.message));
-        try {
-          const localPath = path.join(UPLOADS_DIR, filename);
-          fs.writeFileSync(localPath, req.file.buffer);
-          const host = req.get('host');
-          const protocol = req.protocol;
-          resumeLink = `${protocol}://${host}/uploads/${encodeURIComponent(filename)}`;
-          console.log('Saved fallback file locally at', localPath, '->', resumeLink);
-        } catch (fsErr) {
-          console.error('Failed to save fallback file locally', fsErr && (fsErr.stack || fsErr.message));
-        }
+        // IMPORTANT: do NOT save file locally. Inform frontend to re-upload.
+        return res.status(502).json({ error: 'drive_upload_failed', message: 'Resume upload to Google Drive failed. Please re-upload your resume.' });
       }
     } else {
-      console.log('No resume file in submission (req.file empty)');
+      // No file uploaded — still allow (maybe form without resume), but set resumeLink null
+      console.log('No resume file provided in submission.');
     }
 
     const answers = {};
     Object.keys(req.body || {}).forEach(k => { answers[k] = req.body[k]; });
 
-    const resp = {
-      id: `resp_${Date.now()}`,
-      openingId,
-      openingTitle,
-      source: src,
-      resumeLink: resumeLink || null,
-      answers,
-      createdAt: new Date().toISOString()
-    };
-
-    // persist responses: both DB (if available) and legacy data.json
-    if (db) {
+    let sheetRange = null;
+    // build row as [timestamp, openingId, openingTitle, src, resumeLink, JSON.stringify(answers)]
+    const rowVals = [ new Date().toISOString(), openingId, openingTitle || '', src, resumeLink || '', JSON.stringify(answers) ];
+    if (SHEET_ID) {
       try {
-        await db.collection('responses').insertOne(resp);
+        sheetRange = await appendToSheetReturnRange(SHEET_ID, SHEET_TAB, rowVals);
+        console.log('Appended to sheet, range=', sheetRange);
       } catch (err) {
-        console.warn('Failed to write response to DB, will fallback to file. err=', err && err.message);
+        console.error('appendToSheet error', err && err.message);
+        sheetRange = null;
       }
     }
 
-    const data = readData();
-    data.responses.unshift(resp);
-    writeData(data);
+    const resp = { id: `resp_${Date.now()}`, openingId, openingTitle, source: src, resumeLink: resumeLink || null, answers, createdAt: new Date().toISOString(), sheetRange, status: 'Applied' };
 
-    // Append to sheet (best-effort)
-    try {
-      const row = [ new Date().toISOString(), openingId, openingTitle || '', src, resumeLink || '', JSON.stringify(answers) ];
-      if (SHEET_ID) {
-        await appendToSheet(SHEET_ID, row);
-        console.log('Appended row to sheet', SHEET_ID);
-      } else {
-        console.warn('SHEET_ID not set; skipping appendToSheet');
-      }
-    } catch (err) {
-      console.error('appendToSheet error', err && (err.stack || err.message));
-    }
+    // persist to DB & file (file kept as legacy)
+    try { await createResponseInStore(resp); } catch(e){ console.error('Failed to persist response to store', e && e.message); }
 
-    return res.json({ ok: true, resumeLink });
+    // Respond success (resumeLink always from Drive when present)
+    return res.json({ ok: true, resumeLink, sheetRange });
   } catch (err) {
-    console.error('Error in /api/apply', err && (err.stack || err.message));
+    console.error('Error in /api/apply', err && err.stack);
     return res.status(500).json({ error: 'server_error', message: err?.message || 'unknown' });
   }
 });
@@ -772,7 +772,7 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
 // Health
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// Start server after attempting Mongo connection (but fallback to file store)
+/** ---------- STARTUP: try Mongo, fallback to files ---------- **/
 connectMongo()
   .then(() => {
     console.log('[startup] Mongo attempt finished (connected or verified). Starting HTTP server...');

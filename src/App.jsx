@@ -1,4 +1,4 @@
-// src/App.jsx (updated)
+// src/App.jsx
 import React, { useState, useEffect } from "react";
 import { v4 as uuidv4 } from "uuid";
 
@@ -15,13 +15,24 @@ const Icon = ({ name, className = "w-5 h-5 inline-block" }) => {
 };
 
 /* -------------------------
-   Template data (unchanged)
+   Protected core questions (stable IDs)
+   ------------------------- */
+const CORE_QUESTIONS = {
+  fullName: { id: "q_fullname", type: "short_text", label: "Full name", required: true },
+  email: { id: "q_email", type: "email", label: "Email address", required: true },
+  phone: { id: "q_phone", type: "short_text", label: "Phone number", required: true },
+  resume: { id: "q_resume", type: "file", label: "Upload resume / CV", required: true },
+};
+const PROTECTED_IDS = new Set(Object.values(CORE_QUESTIONS).map(q => q.id));
+
+/* -------------------------
+   Template data (others use uuids)
    ------------------------- */
 const templateQuestions = [
-  { id: uuidv4(), type: "short_text", label: "Full name", required: true },
-  { id: uuidv4(), type: "email", label: "Email address", required: true },
-  { id: uuidv4(), type: "short_text", label: "Phone number" },
-  { id: uuidv4(), type: "file", label: "Upload resume / CV", required: true },
+  CORE_QUESTIONS.fullName,
+  CORE_QUESTIONS.email,
+  CORE_QUESTIONS.phone,
+  CORE_QUESTIONS.resume,
   { id: uuidv4(), type: "number", label: "Years of experience" },
   { id: uuidv4(), type: "url", label: "LinkedIn / Portfolio URL" },
   { id: uuidv4(), type: "dropdown", label: "How did you hear about us?", options: ["LinkedIn", "Internshala", "Referral"] },
@@ -80,14 +91,17 @@ export default function App() {
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newOpening, setNewOpening] = useState({ title: "", location: "Delhi", department: "", preferredSources: [], durationMins: 30 });
-  const [forms, setForms] = useState({});
+  const [forms, setForms] = useState({}); // keyed by openingId: { questions: [...], meta: {...} }
   const [responses, setResponses] = useState([]);
+
+  // Question bank (server-backed)
+  const [questionBank, setQuestionBank] = useState([]);
 
   // auth / user
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
 
-  // custom question modal
+  // custom question modal (only shown from inside form modal)
   const [showCustomModal, setShowCustomModal] = useState(false);
   const [customOpeningId, setCustomOpeningId] = useState(null);
   const [customQ, setCustomQ] = useState({ label: "", type: "short_text", required: false, optionsText: "" });
@@ -98,6 +112,10 @@ export default function App() {
 
   // public form modal
   const [publicView, setPublicView] = useState(null);
+
+  // Form Editor modal per opening
+  const [showFormModal, setShowFormModal] = useState(false);
+  const [formModalOpeningId, setFormModalOpeningId] = useState(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -134,7 +152,8 @@ export default function App() {
       setAuthChecked(true);
       await loadOpenings();
       await loadResponses();
-      await loadForms(); // NEW: fetch forms for authenticated user
+      await loadForms();
+      await loadQuestionBank();
     } catch (err) {
       console.error('fetchProfile', err);
       localStorage.removeItem('token');
@@ -159,8 +178,39 @@ export default function App() {
   }
 
   /* -------------------------
-     Loaders for openings / responses / forms
-     ------------------------- */
+     Helper: ensure core fields exist in a form object (mutating copy)
+  ------------------------- */
+  function ensureCoreFieldsInForm(formObj) {
+    // formObj shape: { questions: [...], meta: {...} }
+    // ensure required meta.coreFields exists
+    const existingIds = new Set((formObj.questions || []).map(q => q.id));
+    const coreOrder = [CORE_QUESTIONS.fullName, CORE_QUESTIONS.email, CORE_QUESTIONS.phone, CORE_QUESTIONS.resume];
+    // Insert any missing core question at start (preserve order)
+    const missing = coreOrder.filter(cq => !existingIds.has(cq.id)).map(cq => ({ ...cq }));
+    if (missing.length) {
+      formObj.questions = [...missing, ...(formObj.questions || [])];
+    }
+    // Always mark required
+    formObj.questions = (formObj.questions || []).map(q => {
+      if (PROTECTED_IDS.has(q.id)) {
+        return { ...q, required: true };
+      }
+      return q;
+    });
+    // Ensure meta.coreFields mapping
+    formObj.meta = formObj.meta || {};
+    formObj.meta.coreFields = formObj.meta.coreFields || {
+      fullNameId: CORE_QUESTIONS.fullName.id,
+      emailId: CORE_QUESTIONS.email.id,
+      phoneId: CORE_QUESTIONS.phone.id,
+      resumeId: CORE_QUESTIONS.resume.id,
+    };
+    return formObj;
+  }
+
+  /* -------------------------
+     Loaders for openings / responses / forms / question bank
+  ------------------------- */
   async function loadOpenings() {
     try {
       if (!localStorage.getItem('token')) return;
@@ -181,15 +231,22 @@ export default function App() {
     }
   }
 
-  // NEW: load forms from server and map them into forms state keyed by openingId
+  // load forms from server and map them into forms state keyed by openingId
   async function loadForms() {
     try {
       if (!localStorage.getItem('token')) return;
       const allForms = await apiFetch('/api/forms');
-      // map by openingId. support multiple forms per opening by keeping only latest (or choose first)
       const map = {};
       (allForms || []).forEach(f => {
-        map[f.openingId] = { questions: (f.data && f.data.questions) || [], meta: (f.data && f.data.meta) || null, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at };
+        const obj = { questions: (f.data && f.data.questions) || [], meta: (f.data && f.data.meta) || null, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at, openingId: f.openingId };
+        map[f.openingId] = ensureCoreFieldsInForm(obj);
+      });
+      // For openings without a saved server form, keep an initialized local form with core fields
+      (openings || []).forEach(op => {
+        if (!map[op.id]) {
+          const base = { questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } };
+          map[op.id] = base;
+        }
       });
       setForms(map);
     } catch (err) {
@@ -197,9 +254,20 @@ export default function App() {
     }
   }
 
+  // load question bank
+  async function loadQuestionBank() {
+    try {
+      if (!localStorage.getItem('token')) return;
+      const rows = await apiFetch('/api/questions');
+      setQuestionBank(rows || []);
+    } catch (err) {
+      console.error('loadQuestionBank', err);
+    }
+  }
+
   /* -------------------------
-     UI functions (create/edit/delete/publish)
-     ------------------------- */
+     UI functions (create/edit/delete/publish/save)
+  ------------------------- */
   function openCreate() {
     setNewOpening({ title: "", location: "Delhi", department: "", preferredSources: [], durationMins: 30 });
     setShowCreate(true);
@@ -217,16 +285,17 @@ export default function App() {
 
     try {
       const token = localStorage.getItem('token');
+      let created;
       if (!token) {
-        const created = { id: `op_${Date.now()}`, ...payload, createdAt: new Date().toISOString() };
+        created = { id: `op_${Date.now()}`, ...payload, createdAt: new Date().toISOString() };
         setOpenings(s => [created, ...s]);
-        setForms(f => ({ ...f, [created.id]: { questions: templateQuestions.slice(0,5).map(q => ({...q, id: uuidv4()})), meta: null } }));
       } else {
         const res = await apiFetch('/api/openings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        const created = { id: res.id, ...payload, createdAt: res.createdAt || new Date().toISOString() };
+        created = { id: res.id, ...payload, createdAt: res.createdAt || new Date().toISOString() };
         setOpenings(s => [created, ...s]);
-        setForms(f => ({ ...f, [created.id]: { questions: templateQuestions.slice(0,5).map(q => ({...q, id: uuidv4()})), meta: null } }));
       }
+      // initialize local form for this opening with core fields + small template
+      setForms(f => ({ ...f, [created.id]: ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } }) }));
       setShowCreate(false);
     } catch (err) {
       console.error('create opening', err);
@@ -256,7 +325,7 @@ export default function App() {
       if (localStorage.getItem('token')) {
         await apiFetch(`/api/openings/${id}`, { method: 'DELETE' });
         setOpenings(s => s.filter(op => op.id !== id));
-        // server cascades forms deletion; refresh forms map
+        // refresh forms map
         await loadForms();
       } else {
         setOpenings(s => s.filter(op => op.id !== id));
@@ -267,43 +336,118 @@ export default function App() {
     }
   }
 
+  // addQuestion respects server-provided question IDs (if present) and blocks duplicates of protected ids
   function addQuestion(openingId, q) {
-    const question = { ...q, id: uuidv4() };
-    setForms((f) => ({ ...f, [openingId]: { ...(f[openingId] || { questions: [] }), questions: [...((f[openingId] && f[openingId].questions) || []), question], meta: f[openingId]?.meta || null } }));
+    const question = { ...q, id: q.id || uuidv4() };
+    setForms((f) => {
+      const existing = f[openingId] || { questions: [], meta: null };
+      const exists = (existing.questions || []).some(x => x.id === question.id);
+      if (exists) {
+        // already present — ignore
+        return f;
+      }
+      // don't allow adding protected question duplicates (core questions are already present)
+      if (PROTECTED_IDS.has(question.id)) {
+        // if not present, ensureCoreFieldsInForm will add them; but if already present or protected, ignore
+        return { ...f };
+      }
+      const newQuestions = [...(existing.questions || []), question];
+      return { ...f, [openingId]: { ...existing, questions: newQuestions } };
+    });
   }
 
   function removeQuestion(openingId, qid) {
-    setForms((f) => ({ ...f, [openingId]: { ...(f[openingId] || {}), questions: f[openingId].questions.filter(q => q.id !== qid), meta: f[openingId]?.meta || null } }));
+    if (PROTECTED_IDS.has(qid)) {
+      alert('This question is mandatory and cannot be removed.');
+      return;
+    }
+    setForms((f) => {
+      const existing = f[openingId] || { questions: [], meta: null };
+      const newQuestions = (existing.questions || []).filter(q => q.id !== qid);
+      return { ...f, [openingId]: { ...existing, questions: newQuestions, meta: existing.meta || null } };
+    });
   }
 
   function onDrag(openingId, from, to) {
     setForms((f) => {
-      const arr = [...(f[openingId].questions || [])];
+      const arr = [...(f[openingId]?.questions || [])];
       const [moved] = arr.splice(from, 1);
       arr.splice(to, 0, moved);
       return { ...f, [openingId]: { ...(f[openingId] || {}), questions: arr, meta: f[openingId]?.meta || null } };
     });
   }
 
+  // open custom modal (only used inside form editor modal)
   function openCustomModalFor(openingId) {
     setCustomOpeningId(openingId);
     setCustomQ({ label: "", type: "short_text", required: false, optionsText: "" });
     setShowCustomModal(true);
   }
 
-  function handleAddCustomQuestion(e) {
+  // Create custom question; persist to server bank if signed in, then add to local form
+  async function handleAddCustomQuestion(e) {
     e.preventDefault();
     const options = customQ.optionsText.split("\n").map(s => s.trim()).filter(Boolean);
-    const q = { label: customQ.label || "Question", type: customQ.type, required: customQ.required, options: options.length ? options : undefined };
-    addQuestion(customOpeningId, q);
-    setShowCustomModal(false);
+    const payload = { label: customQ.label || "Question", type: customQ.type, required: customQ.required, options };
+    try {
+      if (localStorage.getItem('token')) {
+        const created = await apiFetch('/api/questions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        addQuestion(customOpeningId, created);
+        await loadQuestionBank();
+      } else {
+        const q = { id: `q_local_${Date.now()}`, ...payload };
+        addQuestion(customOpeningId, q);
+      }
+      setShowCustomModal(false);
+    } catch (err) {
+      console.error('create bank question', err);
+      alert('Could not create question: ' + (err?.body?.error || err.message));
+    }
   }
 
-  // NEW: create/update form record on server when publishing
+  // Save form without publishing (creates/updates server form and sets meta.coreFields)
+  async function handleSaveForm(openingId) {
+    const opening = openings.find(o => o.id === openingId);
+    if (!opening) return;
+
+    // ensure core present
+    const current = forms[openingId] || { questions: [] };
+    const ensured = ensureCoreFieldsInForm({ questions: (current.questions || []).map(q => ({ ...q })), meta: { ...(current.meta || {}) } });
+
+    const questionsToSave = ensured.questions;
+    const meta = ensured.meta || {};
+    // persist to server
+    try {
+      if (!localStorage.getItem('token')) {
+        // store locally only
+        setForms(f => ({ ...f, [openingId]: { questions: questionsToSave, meta } }));
+        alert('Not signed in — changes saved locally only.');
+        return;
+      }
+
+      const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
+      const serverForm = (serverForms && serverForms.length) ? serverForms[0] : null;
+      const payload = { openingId, data: { questions: questionsToSave, meta } };
+
+      if (serverForm) {
+        await apiFetch(`/api/forms/${serverForm.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      } else {
+        await apiFetch(`/api/forms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      }
+
+      setForms(f => ({ ...f, [openingId]: { questions: questionsToSave, meta } }));
+      alert('Form saved successfully.');
+      await loadForms();
+    } catch (err) {
+      console.error('save form failed', err);
+      alert('Save failed: ' + (err?.body?.error || err?.body?.message || err.message || 'unknown'));
+    }
+  }
+
+  // Publish form (generates share links + persists)
   async function handlePublishForm(openingId) {
     const opening = openings.find(o => o.id === openingId);
     if (!opening) return;
-    // generate formId and shareLinks (client-only link generation — file Id stored server-side)
     const formId = `form_${Date.now()}`;
     const sources = (opening.preferredSources && opening.preferredSources.length) ? opening.preferredSources : ["generic"];
     const shareLinks = {};
@@ -311,35 +455,32 @@ export default function App() {
       shareLinks[src] = `${window.location.origin}/apply/${formId}?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(src)}`;
     });
     const generic = `${window.location.origin}/apply/${formId}?opening=${encodeURIComponent(openingId)}`;
-    // prepare questions and meta
-    const questions = (forms[openingId]?.questions && forms[openingId].questions.length) ? forms[openingId].questions : templateQuestions.slice(0,5).map(q => ({...q, id: uuidv4()}));
-    const meta = { formId, isPublished: true, publishedAt: new Date().toISOString(), shareLinks, genericLink: generic };
 
-    // update local state immediately
-    setForms((f) => ({ ...f, [openingId]: { questions, meta } }));
+    // ensure core and meta
+    const current = forms[openingId] || { questions: [] };
+    const ensured = ensureCoreFieldsInForm({ questions: (current.questions || []).map(q => ({ ...q })), meta: (current.meta || {}) });
 
-    // persist to server (if authenticated) as a form record (create or update)
+    const questionsToPublish = ensured.questions;
+    const meta = { ...(ensured.meta || {}), formId, isPublished: true, publishedAt: new Date().toISOString(), shareLinks, genericLink: generic };
+
+    // optimistic local update
+    setForms((f) => ({ ...f, [openingId]: { questions: questionsToPublish, meta } }));
+
     try {
       if (!localStorage.getItem('token')) {
         alert('Published locally (not persisted). Sign-in to persist forms to server.');
         return;
       }
-      // check if server form exists for this opening (we saved serverFormId in loadForms)
-      const existing = Object.values(forms).find(x => x && x.serverFormId && x.openingId === openingId);
-      // Instead of relying on existing from state, fetch server for the opening
       const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
       let serverForm = (serverForms && serverForms.length) ? serverForms[0] : null;
+      const payload = { openingId, data: { questions: questionsToPublish, meta } };
 
-      const payload = { openingId, data: { questions, meta } };
       if (serverForm) {
-        const updated = await apiFetch(`/api/forms/${serverForm.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        // merge serverFormId info
-        setForms(f => ({ ...f, [openingId]: { questions: updated.data.questions || questions, meta: updated.data.meta || meta, serverFormId: updated.id, created_at: updated.created_at, updated_at: updated.updated_at } }));
+        await apiFetch(`/api/forms/${serverForm.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       } else {
-        const created = await apiFetch(`/api/forms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        setForms(f => ({ ...f, [openingId]: { questions: created.data.questions || questions, meta: created.data.meta || meta, serverFormId: created.id, created_at: created.created_at, updated_at: created.updated_at } }));
+        await apiFetch(`/api/forms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       }
-
+      await loadForms();
       alert('Form published and saved to server.');
     } catch (err) {
       console.error('publish form failed', err);
@@ -355,7 +496,7 @@ export default function App() {
     setPublicView({ openingId, source, submitted: false });
   }
 
-  // NEW: delete single form (server-side if authenticated)
+  // Delete single form
   async function deleteFormByOpening(openingId) {
     if (!confirm('Delete the server-saved form for this opening?')) return;
     try {
@@ -364,7 +505,6 @@ export default function App() {
         alert('Form deleted locally.');
         return;
       }
-      // fetch server form id for the opening
       const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
       if (!serverForms || serverForms.length === 0) {
         setForms(f => { const copy = { ...f }; delete copy[openingId]; return copy; });
@@ -381,7 +521,27 @@ export default function App() {
     }
   }
 
-  // NEW: submit public form (unchanged but kept here)
+  // Open/close Form Editor modal
+  function openFormModal(openingId) {
+    // ensure the opening has a local form in state (with core fields)
+    setForms((f) => {
+      const copy = { ...f };
+      if (!copy[openingId]) {
+        copy[openingId] = ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } });
+      } else {
+        copy[openingId] = ensureCoreFieldsInForm({ questions: (copy[openingId].questions || []).map(q => ({ ...q })), meta: (copy[openingId].meta || {}) });
+      }
+      return copy;
+    });
+    setFormModalOpeningId(openingId);
+    setShowFormModal(true);
+  }
+  function closeFormModal() {
+    setShowFormModal(false);
+    setFormModalOpeningId(null);
+  }
+
+  // Submit public form (unchanged)
   async function handlePublicSubmit(e) {
     e.preventDefault();
     const formEl = e.target;
@@ -418,6 +578,7 @@ export default function App() {
       const resumeLink = data?.resumeLink || data?.link || null;
       setPublicView(prev => ({ ...prev, submitted: true, resumeLink }));
       alert('Application submitted successfully!' + (resumeLink ? ` Resume: ${resumeLink}` : ''));
+      await loadResponses();
     } catch (err) {
       console.error('Submit error', err);
       alert('Submission failed: ' + (err.message || 'unknown error'));
@@ -430,6 +591,35 @@ export default function App() {
     return currentSchema.find(q => q.label && q.label.toLowerCase().includes(k));
   };
 
+  /* -------------------------
+     Hiring management helpers
+  ------------------------- */
+
+  // Update candidate status
+  async function updateCandidateStatus(responseId, newStatus) {
+    try {
+      setResponses(prev => prev.map(r => r.id === responseId ? { ...r, status: newStatus } : r));
+      if (!localStorage.getItem('token')) {
+        alert('Not signed-in: status changed locally only.');
+        return;
+      }
+      const payload = { status: newStatus };
+      const res = await apiFetch(`/api/responses/${encodeURIComponent(responseId)}/status`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (res && res.updatedResp) {
+        setResponses(prev => prev.map(r => r.id === responseId ? res.updatedResp : r));
+      } else {
+        await loadResponses();
+      }
+    } catch (err) {
+      console.error('Failed to update candidate status', err);
+      alert('Status update failed: ' + (err?.body?.error || err.message || 'unknown'));
+      await loadResponses();
+    }
+  }
+
+  /* -------------------------
+     Render gating
+  ------------------------- */
   if (!authChecked) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -442,6 +632,9 @@ export default function App() {
     return <LoginPage backendUrl={BACKEND} />;
   }
 
+  /* -------------------------
+     UI
+  ------------------------- */
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800 flex">
       {/* Sidebar */}
@@ -469,7 +662,8 @@ export default function App() {
           <nav className="space-y-2">
             <div onClick={() => setActiveTab("overview")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'overview' ? 'bg-gray-800' : ''}`}>{<Icon name="menu" />} Overview</div>
             <div onClick={() => setActiveTab("jobs")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'jobs' ? 'bg-gray-800' : ''}`}>Jobs</div>
-            <div onClick={() => setActiveTab("forms")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'forms' ? 'bg-gray-800' : ''}`}>Form Editor</div>
+            {/* "Form Editor" nav removed — editor is accessible from opening card */}
+            <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg.Gray-800' : ''}`}>Hiring</div>
           </nav>
         </div>
       </aside>
@@ -498,7 +692,7 @@ export default function App() {
                           <div className="text-xs text-gray-500">Responses: {responses.filter(r => r.openingId === op.id).length}</div>
                           <div className="mt-2 flex gap-2">
                             <button onClick={() => handleEditOpeningOpen(op)} className="px-2 py-1 border rounded text-sm">Edit</button>
-                            <button onClick={() => { const hasForm = forms[op.id]?.meta?.isPublished; if (hasForm) { alert('Form link available in Form Editor > share'); } else { alert('Form not published yet. Go to Form Editor and Publish.'); } }} className="px-2 py-1 bg-blue-600 text-white rounded text-sm">Get Link</button>
+                            <button onClick={() => openFormModal(op.id)} className="px-2 py-1 bg-blue-600 text-white rounded text-sm">Open Form Editor</button>
                           </div>
                         </div>
                       </div>
@@ -559,7 +753,7 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-3">
                     <button onClick={() => handleEditOpeningOpen(op)} className="px-3 py-1 border rounded">Edit</button>
-                    <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
+                    <button onClick={() => openFormModal(op.id)} className="px-3 py-1 bg-blue-600 text-white rounded">Form Editor</button>
                     <button onClick={() => handleDeleteOpening(op.id)} className="text-red-600 flex items-center gap-1"><Icon name="trash" /> Delete</button>
                   </div>
                 </div>
@@ -568,94 +762,56 @@ export default function App() {
           </>
         )}
 
-        {activeTab === "forms" && (
+        {activeTab === "hiring" && (
           <>
-            <h1 className="text-2xl font-semibold mb-6">Form Editor</h1>
+            <h1 className="text-2xl font-semibold mb-6">Hiring</h1>
 
-            {openings.map(op => (
-              <div key={op.id} className="mb-10 bg-white p-6 rounded shadow">
-                <div className="flex justify-between items-center mb-3">
-                  <h2 className="font-semibold">{op.title} ({op.location})</h2>
-                  <div className="flex gap-2">
-                    <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
-                    <button onClick={() => handlePublishForm(op.id)} className="px-3 py-1 bg-green-600 text-white rounded">Publish</button>
-                    <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-1 border rounded text-red-600">Delete Saved Form</button>
-                  </div>
-                </div>
+            <div className="grid grid-cols-3 gap-6">
+              <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
+                <h2 className="font-semibold mb-4">Candidates</h2>
 
-                <div className="flex gap-6">
-                  <div className="w-1/3 border-r pr-4">
-                    <h3 className="font-semibold mb-2">Template Bank</h3>
-                    {templateQuestions.map(t => (
-                      <div key={t.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(op.id, t)}>{t.label}</div>
-                    ))}
-                  </div>
-
-                  <div className="w-1/3">
-                    <h3 className="font-semibold mb-2">Form Questions</h3>
-                    <ul>
-                      {(forms[op.id]?.questions || []).map((q, idx) => (
-                        <li key={q.id} draggable onDragStart={(e) => e.dataTransfer.setData('from', idx)} onDrop={(e) => { const from = parseInt(e.dataTransfer.getData('from')); onDrag(op.id, from, idx); }} onDragOver={(e) => e.preventDefault()} className="p-2 border mb-2 flex justify-between items-center">
-                          <div>
-                            <div className="font-medium">{q.label}</div>
-                            <div className="text-xs text-gray-500">{q.type}{q.required ? ' • required' : ''}</div>
-                          </div>
-                          <div className="flex gap-2">
-                            <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500">Remove</button>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  <div className="w-1/3">
-                    <h3 className="font-semibold mb-2">Preview & Share</h3>
-
-                    {forms[op.id]?.meta?.isPublished ? (
-                      <div>
-                        <div className="text-sm text-gray-600 mb-2">Form published on {new Date(forms[op.id].meta.publishedAt).toLocaleString()}</div>
-
-                        <div className="mb-2">
-                          <div className="text-xs font-semibold">Shareable links (by source)</div>
-                          <ul className="mt-2">
-                            {Object.entries(forms[op.id].meta.shareLinks).map(([src, link]) => (
-                              <li key={src} className="flex items-center justify-between mb-2">
-                                <div className="text-sm">{src}</div>
-                                <div className="flex items-center gap-2">
-                                  <button onClick={() => handleCopy(link)} className="px-2 py-1 border rounded text-xs">Copy</button>
-                                  <button onClick={() => openPublicFormByLink(op.id, src)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
-                                </div>
-                              </li>
-                            ))}
-                          </ul>
+                <div className="space-y-4">
+                  {responses.length === 0 && <div className="text-sm text-gray-500">No candidates yet.</div>}
+                  {responses.map(resp => {
+                    const opening = openings.find(o => o.id === resp.openingId) || {};
+                    return (
+                      <div key={resp.id} className="p-4 border rounded flex justify-between items-start">
+                        <div>
+                          <div className="font-semibold">{resp.answers?.name || resp.answers?.fullName || opening.title || 'Candidate'}</div>
+                          <div className="text-xs text-gray-500">Applied for: {opening.title || resp.openingId} • {new Date(resp.createdAt).toLocaleString()}</div>
+                          <div className="text-xs text-gray-500 mt-2">Source: {resp.source}</div>
+                          {resp.resumeLink && <div className="text-xs mt-2"><a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">Resume</a></div>}
                         </div>
 
-                        <div className="mt-3">
-                          <div className="text-xs font-semibold">Generic link</div>
-                          <div className="flex items-center gap-2 mt-2">
-                            <div className="text-sm break-all">{forms[op.id].meta.genericLink}</div>
-                            <button onClick={() => handleCopy(forms[op.id].meta.genericLink)} className="px-2 py-1 border rounded text-xs">Copy</button>
-                            <button onClick={() => openPublicFormByLink(op.id, undefined)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
-                          </div>
+                        <div className="flex flex-col items-end gap-2">
+                          <div className="text-xs text-gray-500">Status</div>
+                          <select value={resp.status || 'Applied'} onChange={(e) => updateCandidateStatus(resp.id, e.target.value)} className="border p-2 rounded">
+                            <option>Applied</option>
+                            <option>Screening</option>
+                            <option>Interview</option>
+                            <option>Offer</option>
+                            <option>Hired</option>
+                            <option>Rejected</option>
+                          </select>
+                          <div className="text-xs text-gray-400 mt-1">{resp.id}</div>
                         </div>
                       </div>
-                    ) : (
-                      <div className="text-sm text-gray-500">Form not yet published. Click Publish to generate shareable links per source.</div>
-                    )}
-
-                    <div className="mt-4">
-                      <div className="text-xs font-semibold">Live response count</div>
-                      <div className="text-lg font-medium mt-1">{responses.filter(r => r.openingId === op.id).length}</div>
-                    </div>
-                  </div>
+                    );
+                  })}
                 </div>
               </div>
-            ))}
+
+              <aside className="bg-white rounded-lg p-6 shadow-sm">
+                <h3 className="font-semibold mb-3">Filters</h3>
+                <div className="text-sm text-gray-500">(coming soon) filter by job, status, source, etc.</div>
+              </aside>
+            </div>
           </>
         )}
       </main>
 
-      {/* Modals (create/edit/custom/public form) — unchanged UI */}
+      {/* Modals (create/edit/form editor/public view + custom question modal) */}
+
       {showCreate && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-[720px] shadow-xl">
@@ -756,8 +912,115 @@ export default function App() {
         </div>
       )}
 
+      {/* FORM EDITOR MODAL (per opening) */}
+      {showFormModal && formModalOpeningId && (() => {
+        const op = openings.find(o => o.id === formModalOpeningId) || { id: formModalOpeningId, title: 'Opening' };
+        const formObj = forms[formModalOpeningId] || ensureCoreFieldsInForm({ questions: templateQuestions.slice(0,4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } });
+        return (
+          <div key={"formmodal_" + formModalOpeningId} className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 w-[920px] max-h-[90vh] overflow-auto shadow-xl">
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <h3 className="text-lg font-semibold mb-1">Form Editor — {op.title}</h3>
+                  <div className="text-xs text-gray-500">Edit questions, save, publish, or share links. Core fields are mandatory and cannot be removed.</div>
+                </div>
+                <div className="flex gap-2">
+                  {/* Custom question is now only available inside form editor modal */}
+                  <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
+                  <button onClick={() => handleSaveForm(op.id)} className="px-3 py-1 border rounded">Save</button>
+                  <button onClick={() => handlePublishForm(op.id)} className="px-3 py-1 bg-green-600 text-white rounded">Publish</button>
+                  <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-1 border rounded text-red-600">Delete Saved Form</button>
+                  <button onClick={() => closeFormModal()} className="px-3 py-1 border rounded">Close</button>
+                </div>
+              </div>
+
+              <div className="flex gap-6">
+                <div className="w-1/3 border-r pr-4">
+                  <h3 className="font-semibold mb-2">Question Bank</h3>
+                  {questionBank.length === 0 ? (
+                    <div className="text-xs text-gray-400">No questions in bank yet. Create one using "+ Custom Question" inside this editor.</div>
+                  ) : (
+                    questionBank.map(q => (
+                      <div key={q.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(op.id, q)}>
+                        <div className="font-medium">{q.label}</div>
+                        <div className="text-xs text-gray-500">{q.type}{q.required ? ' • required' : ''}</div>
+                      </div>
+                    ))
+                  )}
+                  <div className="mt-4">
+                    <div className="text-xs text-gray-500">Or use template items</div>
+                    {templateQuestions.map(t => (
+                      <div key={t.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(op.id, t)}>{t.label}</div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="w-1/3">
+                  <h3 className="font-semibold mb-2">Form Questions</h3>
+                  <ul>
+                    {(formObj.questions || []).map((q, idx) => (
+                      <li key={q.id} draggable onDragStart={(e) => e.dataTransfer.setData('from', idx)} onDrop={(e) => { const from = parseInt(e.dataTransfer.getData('from')); onDrag(op.id, from, idx); }} onDragOver={(e) => e.preventDefault()} className="p-2 border mb-2 flex justify-between items-center">
+                        <div>
+                          <div className="font-medium">{q.label}{PROTECTED_IDS.has(q.id) ? ' (mandatory)' : ''}</div>
+                          <div className="text-xs text-gray-500">{q.type}{q.required ? ' • required' : ''}</div>
+                        </div>
+                        <div className="flex gap-2">
+                          {!PROTECTED_IDS.has(q.id) ? <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500">Remove</button> : <div className="text-xs text-gray-400">Protected</div>}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="w-1/3">
+                  <h3 className="font-semibold mb-2">Preview & Share</h3>
+
+                  {formObj.meta?.isPublished ? (
+                    <div>
+                      <div className="text-sm text-gray-600 mb-2">Form published on {formObj.meta.publishedAt ? new Date(formObj.meta.publishedAt).toLocaleString() : ''}</div>
+
+                      <div className="mb-2">
+                        <div className="text-xs font-semibold">Shareable links (by source)</div>
+                        <ul className="mt-2">
+                          {Object.entries(formObj.meta.shareLinks || {}).map(([src, link]) => (
+                            <li key={src} className="flex items-center justify-between mb-2">
+                              <div className="text-sm">{src}</div>
+                              <div className="flex items-center gap-2">
+                                <button onClick={() => handleCopy(link)} className="px-2 py-1 border rounded text-xs">Copy</button>
+                                <button onClick={() => openPublicFormByLink(op.id, src)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+
+                      <div className="mt-3">
+                        <div className="text-xs font-semibold">Generic link</div>
+                        <div className="flex items-center gap-2 mt-2">
+                          <div className="text-sm break-all">{formObj.meta.genericLink}</div>
+                          <button onClick={() => handleCopy(formObj.meta.genericLink)} className="px-2 py-1 border rounded text-xs">Copy</button>
+                          <button onClick={() => openPublicFormByLink(op.id, undefined)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-sm text-gray-500">Form not yet published. Click Publish to generate shareable links per source.</div>
+                  )}
+
+                  <div className="mt-4">
+                    <div className="text-xs font-semibold">Live response count</div>
+                    <div className="text-lg font-medium mt-1">{responses.filter(r => r.openingId === op.id).length}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Custom Question Modal: ensure it sits above Form Editor modal by giving a very high inline zIndex */}
       {showCustomModal && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+        <div style={{ zIndex: 2000 }} className="fixed inset-0 bg-black/30 flex items-center justify-center">
           <div className="bg-white rounded-lg p-6 w-[560px] shadow-xl">
             <h3 className="text-lg font-semibold mb-3">Add Custom Question</h3>
             <form onSubmit={handleAddCustomQuestion} className="space-y-3">
