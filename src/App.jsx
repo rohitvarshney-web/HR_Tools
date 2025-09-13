@@ -1,4 +1,4 @@
-// src/App.jsx (updated)
+// src/App.jsx (full — includes Question Bank + Hiring tab)
 import React, { useState, useEffect } from "react";
 import { v4 as uuidv4 } from "uuid";
 
@@ -83,6 +83,9 @@ export default function App() {
   const [forms, setForms] = useState({});
   const [responses, setResponses] = useState([]);
 
+  // Question bank (server-backed)
+  const [questionBank, setQuestionBank] = useState([]);
+
   // auth / user
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -134,7 +137,8 @@ export default function App() {
       setAuthChecked(true);
       await loadOpenings();
       await loadResponses();
-      await loadForms(); // NEW: fetch forms for authenticated user
+      await loadForms();
+      await loadQuestionBank();
     } catch (err) {
       console.error('fetchProfile', err);
       localStorage.removeItem('token');
@@ -159,7 +163,7 @@ export default function App() {
   }
 
   /* -------------------------
-     Loaders for openings / responses / forms
+     Loaders for openings / responses / forms / question bank
      ------------------------- */
   async function loadOpenings() {
     try {
@@ -186,14 +190,24 @@ export default function App() {
     try {
       if (!localStorage.getItem('token')) return;
       const allForms = await apiFetch('/api/forms');
-      // map by openingId. support multiple forms per opening by keeping only latest (or choose first)
       const map = {};
       (allForms || []).forEach(f => {
-        map[f.openingId] = { questions: (f.data && f.data.questions) || [], meta: (f.data && f.data.meta) || null, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at };
+        map[f.openingId] = { questions: (f.data && f.data.questions) || [], meta: (f.data && f.data.meta) || null, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at, openingId: f.openingId };
       });
       setForms(map);
     } catch (err) {
       console.error('loadForms', err);
+    }
+  }
+
+  // NEW: load question bank
+  async function loadQuestionBank() {
+    try {
+      if (!localStorage.getItem('token')) return;
+      const rows = await apiFetch('/api/questions');
+      setQuestionBank(rows || []);
+    } catch (err) {
+      console.error('loadQuestionBank', err);
     }
   }
 
@@ -256,7 +270,7 @@ export default function App() {
       if (localStorage.getItem('token')) {
         await apiFetch(`/api/openings/${id}`, { method: 'DELETE' });
         setOpenings(s => s.filter(op => op.id !== id));
-        // server cascades forms deletion; refresh forms map
+        // refresh forms map
         await loadForms();
       } else {
         setOpenings(s => s.filter(op => op.id !== id));
@@ -267,8 +281,10 @@ export default function App() {
     }
   }
 
+  // addQuestion now respects server-provided question IDs (if present)
   function addQuestion(openingId, q) {
-    const question = { ...q, id: uuidv4() };
+    // if question comes from questionBank (has id like q_...), keep that id and treat as reference-style question
+    const question = { ...q, id: q.id || uuidv4() };
     setForms((f) => ({ ...f, [openingId]: { ...(f[openingId] || { questions: [] }), questions: [...((f[openingId] && f[openingId].questions) || []), question], meta: f[openingId]?.meta || null } }));
   }
 
@@ -291,19 +307,35 @@ export default function App() {
     setShowCustomModal(true);
   }
 
-  function handleAddCustomQuestion(e) {
+  // CREATE custom question: persist to server question bank first (if signed in),
+  // then add to local form and refresh bank.
+  async function handleAddCustomQuestion(e) {
     e.preventDefault();
     const options = customQ.optionsText.split("\n").map(s => s.trim()).filter(Boolean);
-    const q = { label: customQ.label || "Question", type: customQ.type, required: customQ.required, options: options.length ? options : undefined };
-    addQuestion(customOpeningId, q);
-    setShowCustomModal(false);
+    const payload = { label: customQ.label || "Question", type: customQ.type, required: customQ.required, options };
+    try {
+      if (localStorage.getItem('token')) {
+        const created = await apiFetch('/api/questions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        // server returns created question object
+        addQuestion(customOpeningId, created);
+        // refresh bank
+        await loadQuestionBank();
+      } else {
+        // fallback: create a local question object
+        const q = { id: `q_local_${Date.now()}`, ...payload };
+        addQuestion(customOpeningId, q);
+      }
+      setShowCustomModal(false);
+    } catch (err) {
+      console.error('create bank question', err);
+      alert('Could not create question: ' + (err?.body?.error || err.message));
+    }
   }
 
-  // NEW: create/update form record on server when publishing
+  // NEW: publish form (persist to server as form record with questions + meta)
   async function handlePublishForm(openingId) {
     const opening = openings.find(o => o.id === openingId);
     if (!opening) return;
-    // generate formId and shareLinks (client-only link generation — file Id stored server-side)
     const formId = `form_${Date.now()}`;
     const sources = (opening.preferredSources && opening.preferredSources.length) ? opening.preferredSources : ["generic"];
     const shareLinks = {};
@@ -311,35 +343,33 @@ export default function App() {
       shareLinks[src] = `${window.location.origin}/apply/${formId}?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(src)}`;
     });
     const generic = `${window.location.origin}/apply/${formId}?opening=${encodeURIComponent(openingId)}`;
-    // prepare questions and meta
-    const questions = (forms[openingId]?.questions && forms[openingId].questions.length) ? forms[openingId].questions : templateQuestions.slice(0,5).map(q => ({...q, id: uuidv4()}));
+    const questionsToPublish = (forms[openingId]?.questions && forms[openingId].questions.length) ? forms[openingId].questions : templateQuestions.slice(0,5).map(q => ({...q, id: uuidv4()}));
     const meta = { formId, isPublished: true, publishedAt: new Date().toISOString(), shareLinks, genericLink: generic };
 
     // update local state immediately
-    setForms((f) => ({ ...f, [openingId]: { questions, meta } }));
+    setForms((f) => ({ ...f, [openingId]: { questions: questionsToPublish, meta } }));
 
-    // persist to server (if authenticated) as a form record (create or update)
+    // persist to server (create or update)
     try {
       if (!localStorage.getItem('token')) {
         alert('Published locally (not persisted). Sign-in to persist forms to server.');
         return;
       }
-      // check if server form exists for this opening (we saved serverFormId in loadForms)
-      const existing = Object.values(forms).find(x => x && x.serverFormId && x.openingId === openingId);
-      // Instead of relying on existing from state, fetch server for the opening
+      // fetch server form for this opening
       const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
       let serverForm = (serverForms && serverForms.length) ? serverForms[0] : null;
+      const payload = { openingId, data: { questions: questionsToPublish, meta } };
 
-      const payload = { openingId, data: { questions, meta } };
       if (serverForm) {
+        // update
         const updated = await apiFetch(`/api/forms/${serverForm.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        // merge serverFormId info
-        setForms(f => ({ ...f, [openingId]: { questions: updated.data.questions || questions, meta: updated.data.meta || meta, serverFormId: updated.id, created_at: updated.created_at, updated_at: updated.updated_at } }));
+        // updated returns form; re-fetch forms to be safe
+        await loadForms();
       } else {
+        // create
         const created = await apiFetch(`/api/forms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        setForms(f => ({ ...f, [openingId]: { questions: created.data.questions || questions, meta: created.data.meta || meta, serverFormId: created.id, created_at: created.created_at, updated_at: created.updated_at } }));
+        await loadForms();
       }
-
       alert('Form published and saved to server.');
     } catch (err) {
       console.error('publish form failed', err);
@@ -364,7 +394,6 @@ export default function App() {
         alert('Form deleted locally.');
         return;
       }
-      // fetch server form id for the opening
       const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
       if (!serverForms || serverForms.length === 0) {
         setForms(f => { const copy = { ...f }; delete copy[openingId]; return copy; });
@@ -418,6 +447,8 @@ export default function App() {
       const resumeLink = data?.resumeLink || data?.link || null;
       setPublicView(prev => ({ ...prev, submitted: true, resumeLink }));
       alert('Application submitted successfully!' + (resumeLink ? ` Resume: ${resumeLink}` : ''));
+      // reload responses so Hiring tab picks this up
+      await loadResponses();
     } catch (err) {
       console.error('Submit error', err);
       alert('Submission failed: ' + (err.message || 'unknown error'));
@@ -430,6 +461,43 @@ export default function App() {
     return currentSchema.find(q => q.label && q.label.toLowerCase().includes(k));
   };
 
+  /* -------------------------
+     Hiring management helpers
+     ------------------------- */
+
+  // Update candidate status: calls backend and updates local state
+  async function updateCandidateStatus(responseId, newStatus) {
+    try {
+      // optimistic UI update
+      setResponses(prev => prev.map(r => r.id === responseId ? { ...r, status: newStatus } : r));
+      if (!localStorage.getItem('token')) {
+        alert('Not signed-in: status changed locally only.');
+        return;
+      }
+      const payload = { status: newStatus };
+      const res = await apiFetch(`/api/responses/${encodeURIComponent(responseId)}/status`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      // replace with server response if provided
+      if (res && res.updatedResp) {
+        setResponses(prev => prev.map(r => r.id === responseId ? res.updatedResp : r));
+      } else if (res && res.updatedResp === undefined && res.updatedResp !== null) {
+        // ignore
+      } else if (res && res.updatedResp === null) {
+        // no-op
+      } else {
+        // if returned updatedResp nested differently, try to sync by reloading all responses
+        await loadResponses();
+      }
+    } catch (err) {
+      console.error('Failed to update candidate status', err);
+      alert('Status update failed: ' + (err?.body?.error || err.message || 'unknown'));
+      // rollback UI (reload from server)
+      await loadResponses();
+    }
+  }
+
+  /* -------------------------
+     Render gating
+     ------------------------- */
   if (!authChecked) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -442,6 +510,9 @@ export default function App() {
     return <LoginPage backendUrl={BACKEND} />;
   }
 
+  /* -------------------------
+     UI
+     ------------------------- */
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800 flex">
       {/* Sidebar */}
@@ -470,6 +541,7 @@ export default function App() {
             <div onClick={() => setActiveTab("overview")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'overview' ? 'bg-gray-800' : ''}`}>{<Icon name="menu" />} Overview</div>
             <div onClick={() => setActiveTab("jobs")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'jobs' ? 'bg-gray-800' : ''}`}>Jobs</div>
             <div onClick={() => setActiveTab("forms")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'forms' ? 'bg-gray-800' : ''}`}>Form Editor</div>
+            <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg-gray-800' : ''}`}>Hiring</div>
           </nav>
         </div>
       </aside>
@@ -585,10 +657,25 @@ export default function App() {
 
                 <div className="flex gap-6">
                   <div className="w-1/3 border-r pr-4">
-                    <h3 className="font-semibold mb-2">Template Bank</h3>
-                    {templateQuestions.map(t => (
-                      <div key={t.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(op.id, t)}>{t.label}</div>
-                    ))}
+                    <h3 className="font-semibold mb-2">Question Bank</h3>
+                    {/* show question bank (server-backed) */}
+                    {questionBank.length === 0 ? (
+                      <div className="text-xs text-gray-400">No questions in bank yet. Create one using "+ Custom Question" or via the modal.</div>
+                    ) : (
+                      questionBank.map(q => (
+                        <div key={q.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(op.id, q)}>
+                          <div className="font-medium">{q.label}</div>
+                          <div className="text-xs text-gray-500">{q.type}{q.required ? ' • required' : ''}</div>
+                        </div>
+                      ))
+                    )}
+
+                    <div className="mt-4">
+                      <div className="text-xs text-gray-500">Or use template items</div>
+                      {templateQuestions.map(t => (
+                        <div key={t.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(op.id, t)}>{t.label}</div>
+                      ))}
+                    </div>
                   </div>
 
                   <div className="w-1/3">
@@ -653,9 +740,56 @@ export default function App() {
             ))}
           </>
         )}
+
+        {activeTab === "hiring" && (
+          <>
+            <h1 className="text-2xl font-semibold mb-6">Hiring</h1>
+
+            <div className="grid grid-cols-3 gap-6">
+              <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
+                <h2 className="font-semibold mb-4">Candidates</h2>
+
+                <div className="space-y-4">
+                  {responses.length === 0 && <div className="text-sm text-gray-500">No candidates yet.</div>}
+                  {responses.map(resp => {
+                    const opening = openings.find(o => o.id === resp.openingId) || {};
+                    return (
+                      <div key={resp.id} className="p-4 border rounded flex justify-between items-start">
+                        <div>
+                          <div className="font-semibold">{resp.answers?.name || resp.answers?.fullName || opening.title || 'Candidate'}</div>
+                          <div className="text-xs text-gray-500">Applied for: {opening.title || resp.openingId} • {new Date(resp.createdAt).toLocaleString()}</div>
+                          <div className="text-xs text-gray-500 mt-2">Source: {resp.source}</div>
+                          {resp.resumeLink && <div className="text-xs mt-2"><a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">Resume</a></div>}
+                        </div>
+
+                        <div className="flex flex-col items-end gap-2">
+                          <div className="text-xs text-gray-500">Status</div>
+                          <select value={resp.status || 'Applied'} onChange={(e) => updateCandidateStatus(resp.id, e.target.value)} className="border p-2 rounded">
+                            <option>Applied</option>
+                            <option>Screening</option>
+                            <option>Interview</option>
+                            <option>Offer</option>
+                            <option>Hired</option>
+                            <option>Rejected</option>
+                          </select>
+                          <div className="text-xs text-gray-400 mt-1">{resp.id}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <aside className="bg-white rounded-lg p-6 shadow-sm">
+                <h3 className="font-semibold mb-3">Filters</h3>
+                <div className="text-sm text-gray-500">(coming soon) filter by job, status, source, etc.</div>
+              </aside>
+            </div>
+          </>
+        )}
       </main>
 
-      {/* Modals (create/edit/custom/public form) — unchanged UI */}
+      {/* Modals (create/edit/custom/public form) */}
       {showCreate && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-[720px] shadow-xl">
