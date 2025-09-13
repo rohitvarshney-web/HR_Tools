@@ -652,7 +652,7 @@ export default function App() {
     const nameCandidates = ['full name','fullname','name','candidate name','applicant name','your name','fullName','name'];
     const byAns = findKey(nameCandidates);
     if (byAns) return byAns;
-    // fallback: if opening title was previously used as name, avoid that. use generic
+    // fallback: 'Candidate'
     return 'Candidate';
   }
 
@@ -807,17 +807,30 @@ export default function App() {
                     const opening = openings.find(o => o.id === resp.openingId) || {};
                     const candidateName = resolveCandidateName(resp, opening);
                     const candidateLocation = resolveCandidateLocation(resp, opening);
+                    const appliedAt = resp.createdAt ? new Date(resp.createdAt).toLocaleString() : '';
                     return (
                       <div key={resp.id} className="p-4 border rounded flex justify-between items-start">
                         <div>
-                          <div className="font-semibold">{candidateName}</div>
-                          <div className="text-xs text-gray-500">
-                            {opening.title ? ` • ${opening.title}` : ''}
-                            {candidateLocation ? `${candidateLocation} • ` : ''}
-                          </div>
+                          {/* Job name (bold) and location (next line) */}
+                          <div className="font-semibold">{opening.title || '—'}</div>
+                          <div className="text-sm text-gray-500">{candidateLocation || ''}</div>
+
+                          {/* Candidate name shown beneath */}
+                          <div className="mt-2 text-lg font-medium">{candidateName}</div>
 
                           <div className="text-xs text-gray-500 mt-2">Source: {resp.source}</div>
-                          {resp.resumeLink && <div className="text-xs mt-2"><a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">Resume</a></div>}
+
+                          {/* Resume link and response id separated by | */}
+                          {resp.resumeLink && (
+                            <div className="text-xs mt-2">
+                              <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">Resume</a>
+                              <span className="mx-2 text-gray-400">|</span>
+                              <span className="text-gray-500">{resp.id}</span>
+                            </div>
+                          )}
+                          {!resp.resumeLink && (
+                            <div className="text-xs mt-2 text-gray-500">{resp.id}</div>
+                          )}
                         </div>
 
                         <div className="flex flex-col items-end gap-2">
@@ -830,10 +843,9 @@ export default function App() {
                             <option>Hired</option>
                             <option>Rejected</option>
                           </select>
-                          <div className="text-xs text-gray-400 mt-1">
-                              {resp.id}
-                              Applied on: {new Date(resp.createdAt).toLocaleString()}
-                          </div>
+
+                          {/* Applied at moved here (replaces previous position of response id) */}
+                          <div className="text-xs text-gray-400 mt-1">Applied at: {appliedAt}</div>
                         </div>
                       </div>
                     );
