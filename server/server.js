@@ -702,6 +702,7 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
 
     const opening = await getOpeningFromStore(openingId) || readData().openings.find(o => o.id === openingId);
     const openingTitle = opening ? opening.title : null;
+    const openingLocation = opening ? opening.location : null; // NEW
 
     // resume upload (strict: require Drive upload to succeed)
     let resumeLink = null;
@@ -885,6 +886,7 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
       id: `resp_${Date.now()}`,
       openingId,
       openingTitle,
+      location: openingLocation || null, // NEW
       source: src,
       fullName: extractedFullName || null,
       email: extractedEmail || null,
@@ -903,6 +905,7 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
       new Date().toISOString(),
       openingId,
       openingTitle || '',
+      openingLocation || '', // NEW column
       src,
       resp.fullName || '',
       resp.email || '',
