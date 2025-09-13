@@ -512,28 +512,97 @@ app.get('/api/forms/:id', authMiddleware, async (req, res) => {
   try { const f = await getFormFromStore(req.params.id); if (!f) return res.status(404).json({ error: 'form_not_found' }); return res.json(f); }
   catch(err){ console.error('GET /api/forms/:id', err); return res.status(500).json({ error: 'server_error' }); }
 });
+
+// ====== UPDATED: POST /api/forms - server generates canonical meta on publish ======
 app.post('/api/forms', authMiddleware, async (req, res) => {
   try {
     const { openingId, data } = req.body || {};
     if (!openingId) return res.status(400).json({ error: 'openingId_required' });
     const op = await getOpeningFromStore(openingId);
     if (!op) return res.status(400).json({ error: 'invalid_openingId' });
+
     const id = `form_${Date.now()}`;
     const now = new Date().toISOString();
-    const newForm = { id, openingId, data: data || {}, created_at: now, updated_at: now };
+    const formData = data || {};
+
+    // If client requested publish, ensure server generates canonical meta
+    if (formData.meta && formData.meta.isPublished) {
+      const formId = id;
+      const publishedAt = now;
+      const frontendBase = FRONTEND_URL.replace(/\/$/, '');
+      const genericLink = `${frontendBase}/apply/${formId}?opening=${encodeURIComponent(openingId)}`;
+      const sources = Array.isArray(op.preferredSources) && op.preferredSources.length ? op.preferredSources : ['generic'];
+      const shareLinks = {};
+      sources.forEach(src => {
+        shareLinks[src] = `${frontendBase}/apply/${formId}?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(src)}`;
+      });
+      formData.meta = { ...formData.meta, formId, isPublished: true, publishedAt, genericLink, shareLinks };
+    } else {
+      // keep meta null or as provided (non-published)
+      formData.meta = formData.meta || null;
+    }
+
+    const newForm = { id, openingId, data: formData, created_at: now, updated_at: now };
     await createFormInStore(newForm);
+    console.log('[forms] created form', newForm.id, 'meta=', newForm.data && newForm.data.meta ? 'present' : 'none');
     return res.status(201).json(newForm);
   } catch (err) { console.error('POST /api/forms', err); return res.status(500).json({ error: 'server_error' }); }
 });
+
+// ====== UPDATED: PUT /api/forms/:id - augment/generate meta when publishing ======
 app.put('/api/forms/:id', authMiddleware, async (req, res) => {
   try {
     const id = req.params.id;
-    const patch = req.body.data !== undefined ? { data: req.body.data, updated_at: new Date().toISOString() } : { updated_at: new Date().toISOString() };
-    const updated = await updateFormInStore(id, patch);
+    const incomingData = req.body.data !== undefined ? req.body.data : undefined;
+    const now = new Date().toISOString();
+
+    const existing = await getFormFromStore(id);
+    if (!existing) return res.status(404).json({ error: 'form_not_found' });
+
+    const patched = {};
+    if (incomingData !== undefined) {
+      patched.data = incomingData;
+      patched.updated_at = now;
+    } else {
+      patched.updated_at = now;
+    }
+
+    // determine whether this form will be published (incoming request or already published)
+    const willPublish = (incomingData && incomingData.meta && incomingData.meta.isPublished) || (existing.data && existing.data.meta && existing.data.meta.isPublished);
+    if (willPublish) {
+      const openingId = existing.openingId || (patched.data && patched.data.openingId) || null;
+      const op = openingId ? await getOpeningFromStore(openingId) : null;
+      const formId = existing.id || id;
+      const publishedAt = (incomingData && incomingData.meta && incomingData.meta.publishedAt) || (existing.data && existing.data.meta && existing.data.meta.publishedAt) || now;
+
+      const clientMeta = (incomingData && incomingData.meta) ? { ...incomingData.meta } : (existing.data && existing.data.meta) ? { ...existing.data.meta } : {};
+      clientMeta.formId = clientMeta.formId || formId;
+      clientMeta.isPublished = true;
+      clientMeta.publishedAt = clientMeta.publishedAt || publishedAt;
+
+      const frontendBase = FRONTEND_URL.replace(/\/$/, '');
+      clientMeta.genericLink = clientMeta.genericLink || `${frontendBase}/apply/${clientMeta.formId}?opening=${encodeURIComponent(openingId)}`;
+
+      if (!clientMeta.shareLinks) {
+        const sources = (op && Array.isArray(op.preferredSources) && op.preferredSources.length) ? op.preferredSources : ['generic'];
+        const shareLinks = {};
+        sources.forEach(src => {
+          shareLinks[src] = `${frontendBase}/apply/${clientMeta.formId}?opening=${encodeURIComponent(openingId)}&src=${encodeURIComponent(src)}`;
+        });
+        clientMeta.shareLinks = shareLinks;
+      }
+
+      patched.data = patched.data || existing.data || {};
+      patched.data.meta = clientMeta;
+    }
+
+    const updated = await updateFormInStore(id, patched);
     if (!updated) return res.status(404).json({ error: 'form_not_found' });
+    console.log('[forms] updated form', id, 'meta=', updated.data && updated.data.meta ? 'present' : 'none');
     return res.json(updated);
   } catch (err) { console.error('PUT /api/forms/:id', err); return res.status(500).json({ error: 'server_error' }); }
 });
+
 app.delete('/api/forms/:id', authMiddleware, async (req, res) => {
   try { const id = req.params.id; const result = await deleteFormInStore(id); return res.json(result); }
   catch (err) { console.error('DELETE /api/forms/:id', err); return res.status(500).json({ error: 'server_error' }); }
