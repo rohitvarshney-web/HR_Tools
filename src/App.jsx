@@ -454,7 +454,7 @@ export default function App() {
     });
   }
 
-  // open custom modal (only used inside form editor modal)
+  // open custom modal (only used inside form modal)
   function openCustomModalFor(openingId) {
     setCustomOpeningId(openingId);
     setCustomQ({ label: "", type: "short_text", required: false, optionsText: "" });
@@ -951,21 +951,21 @@ export default function App() {
                     const candidateName = resp.fullName || resp.answers?.['Full name'] || resp.answers?.['full name'] || resp.answers?.name || resp.answers?.fullname || 'Candidate';
                     const candidateEmail = resp.email || resp.answers?.email || resp.answers?.['Email address'] || '';
                     return (
-                      <div key={resp.id} className="p-4 border rounded flex justify-between items-start">
+                      <div key={resp.id} className="p-4 border rounded flex justify-between items-start" style={{ minHeight: 120 }}>
                         {/* Left column: main candidate info */}
                         <div className="flex-1 pr-4">
                           {/* Name at top, email in parentheses styled as secondary info */}
-                          <div className="font-semibold">{candidateName} {candidateEmail ? <span className="text-xs text-gray-500">({candidateEmail})</span> : null}</div>
+                          <div className="font-semibold">{candidateName} {candidateEmail ? <span className="text-sm text-gray-500">({candidateEmail})</span> : null}</div>
 
                           {/* Opening name and location inline (secondary info style) */}
-                          <div className="text-xs text-gray-500 mt-1">
+                          <div className="text-sm text-gray-500 mt-1">
                             {opening.title || resp.openingId} • {opening.location || ''}
                           </div>
 
-                          <div className="text-xs text-gray-500 mt-2">Source: {resp.source || 'unknown'}</div>
+                          <div className="text-sm text-gray-500 mt-2">Source: {resp.source || 'unknown'}</div>
 
                           {/* Resume + response id beside it separated by | */}
-                          <div className="text-xs mt-3">
+                          <div className="text-sm mt-3">
                             {resp.resumeLink ? (
                               <>
                                 <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">Resume</a>
@@ -979,7 +979,7 @@ export default function App() {
                         </div>
 
                         {/* Right column: status selector and applied timestamp at bottom */}
-                        <div className="flex flex-col items-end" style={{ minWidth: 140 }}>
+                        <div className="flex flex-col justify-between items-end" style={{ minWidth: 160 }}>
                           <div className="text-xs text-gray-500">Status</div>
                           <select value={resp.status || 'Applied'} onChange={(e) => updateCandidateStatus(resp.id, e.target.value)} className="border p-2 rounded mb-2">
                             <option>Applied</option>
@@ -991,7 +991,7 @@ export default function App() {
                           </select>
 
                           {/* Applied at — bottom-right corner (secondary small text) */}
-                          <div className="text-xs text-gray-500 mt-auto">Applied at: {new Date(resp.createdAt).toLocaleString()}</div>
+                          <div className="text-sm text-gray-500">Applied at: {new Date(resp.createdAt).toLocaleString()}</div>
                         </div>
                       </div>
                     );
@@ -999,7 +999,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Right: Filters + summary (col-span-1) */}
+              {/* Right: Filters (col-span-1) */}
               <aside className="bg-white rounded-lg p-6 shadow-sm">
                 <h3 className="font-semibold mb-3">Filters</h3>
 
@@ -1061,18 +1061,6 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="mt-6">
-                  <h4 className="font-semibold mb-2">Filters Summary</h4>
-                  <div className="text-sm text-gray-600">
-                    <div>Openings: {filterOpening.length ? filterOpening.join(', ') : 'All'}</div>
-                    <div>Locations: {filterLocation.length ? filterLocation.join(', ') : 'All'}</div>
-                    <div>Departments: {filterDepartment.length ? filterDepartment.join(', ') : 'All'}</div>
-                    <div>Source: {filterSource.length ? filterSource.join(', ') : 'All'}</div>
-                    <div>Full name: {filterFullName.length ? filterFullName.join(', ') : 'All'}</div>
-                    <div>Email: {filterEmail.length ? filterEmail.join(', ') : 'All'}</div>
-                    <div>Status: {filterStatus.length ? filterStatus.join(', ') : 'All'}</div>
-                  </div>
-                </div>
               </aside>
             </div>
           </>
