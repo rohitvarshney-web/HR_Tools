@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { v4 as uuidv4 } from "uuid";
 
 /* Small inline icons component */
@@ -116,6 +116,16 @@ export default function App() {
   // Form Editor modal per opening
   const [showFormModal, setShowFormModal] = useState(false);
   const [formModalOpeningId, setFormModalOpeningId] = useState(null);
+
+  // Filters state: each is a Set of selected values
+  const [filters, setFilters] = useState({
+    openings: new Set(),
+    locations: new Set(),
+    departments: new Set(),
+    sources: new Set(),
+    names: new Set(),
+    emails: new Set(),
+  });
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -633,13 +643,11 @@ export default function App() {
   }
 
   /* -------------------------
-     Helper utilities for candidate display
+     Helper utilities for candidate display and filters
   ------------------------- */
   function resolveCandidateName(resp, opening) {
-    // Prefer explicit top-level fields first (server now stores fullName/email/phone), then common answer keys
     if (!resp) return 'Candidate';
     if (resp.fullName) return resp.fullName;
-    // look in answers object (case-insensitive)
     const answers = resp.answers || {};
     const keys = Object.keys(answers || {});
     const findKey = (cands) => {
@@ -652,16 +660,119 @@ export default function App() {
     const nameCandidates = ['full name','fullname','name','candidate name','applicant name','your name','fullName','name'];
     const byAns = findKey(nameCandidates);
     if (byAns) return byAns;
-    // fallback: 'Candidate'
     return 'Candidate';
   }
 
+  function resolveCandidateEmail(resp) {
+    if (!resp) return null;
+    if (resp.email) return resp.email;
+    const answers = resp.answers || {};
+    const keys = Object.keys(answers || {});
+    const emailCandidates = ['email address','email','e-mail','mail','emailAddress','emailaddress'];
+    for (const cand of emailCandidates) {
+      const found = keys.find(k => (k || '').toString().toLowerCase().trim() === cand.toLowerCase().trim());
+      if (found) return answers[found];
+    }
+    // try fuzzy contains
+    for (const k of keys) {
+      if ((k || '').toLowerCase().includes('email')) return answers[k];
+    }
+    return null;
+  }
+
   function resolveCandidateLocation(resp, opening) {
-    // Prefer resp.location (new server field), then opening.location
     if (resp && resp.location) return resp.location;
     if (opening && opening.location) return opening.location;
     return null;
   }
+
+  // Toggle filter value in a named filter set
+  function toggleFilter(group, value) {
+    setFilters(prev => {
+      const copy = {
+        openings: new Set(prev.openings),
+        locations: new Set(prev.locations),
+        departments: new Set(prev.departments),
+        sources: new Set(prev.sources),
+        names: new Set(prev.names),
+        emails: new Set(prev.emails),
+      };
+      if (copy[group].has(value)) copy[group].delete(value);
+      else copy[group].add(value);
+      return copy;
+    });
+  }
+
+  function clearFilterGroup(group) {
+    setFilters(prev => ({ ...prev, [group]: new Set() }));
+  }
+
+  function clearAllFilters() {
+    setFilters({ openings: new Set(), locations: new Set(), departments: new Set(), sources: new Set(), names: new Set(), emails: new Set() });
+  }
+
+  // Build unique lists for filter options (memoized)
+  const filterOptions = useMemo(() => {
+    const openingTitles = new Map(); // id -> title
+    openings.forEach(o => { openingTitles.set(o.id, o.title || o.id); });
+
+    const openingsByTitle = Array.from(new Set(openings.map(o => o.title || o.id))).sort();
+    const locations = Array.from(new Set(openings.map(o => o.location || '').filter(Boolean))).sort();
+    const departments = Array.from(new Set(openings.map(o => o.department || '').filter(Boolean))).sort();
+
+    const sources = Array.from(new Set(responses.map(r => r.source || 'unknown').filter(Boolean))).sort();
+
+    const names = Array.from(new Set(responses.map(r => {
+      const op = openings.find(o => o.id === r.openingId) || {};
+      return resolveCandidateName(r, op) || '';
+    }).filter(Boolean))).sort();
+
+    const emails = Array.from(new Set(responses.map(r => resolveCandidateEmail(r)).filter(Boolean))).sort();
+
+    return { openingsByTitle, locations, departments, sources, names, emails, openingTitles };
+  }, [openings, responses]);
+
+  // Apply combined filters to responses
+  const filteredResponses = useMemo(() => {
+    // if no filters selected at all -> return all
+    const anyFilterSelected = filters.openings.size || filters.locations.size || filters.departments.size || filters.sources.size || filters.names.size || filters.emails.size;
+    if (!anyFilterSelected) return responses;
+
+    return responses.filter(r => {
+      const op = openings.find(o => o.id === r.openingId) || {};
+      // opening title check
+      if (filters.openings.size) {
+        const title = op.title || r.openingId;
+        if (!filters.openings.has(title)) return false;
+      }
+      // location check
+      if (filters.locations.size) {
+        const loc = resolveCandidateLocation(r, op) || '';
+        if (!filters.locations.has(loc)) return false;
+      }
+      // department check
+      if (filters.departments.size) {
+        const dept = (op.department || '').toString();
+        if (!filters.departments.has(dept)) return false;
+      }
+      // source check
+      if (filters.sources.size) {
+        const src = (r.source || 'unknown').toString();
+        if (!filters.sources.has(src)) return false;
+      }
+      // name check
+      if (filters.names.size) {
+        const name = resolveCandidateName(r, op) || '';
+        if (!filters.names.has(name)) return false;
+      }
+      // email check
+      if (filters.emails.size) {
+        const email = (resolveCandidateEmail(r) || '').toString();
+        if (!filters.emails.has(email)) return false;
+      }
+      return true;
+    });
+  }, [responses, openings, filters]);
 
   /* -------------------------
      UI
@@ -799,15 +910,22 @@ export default function App() {
 
             <div className="grid grid-cols-3 gap-6">
               <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
-                <h2 className="font-semibold mb-4">Candidates</h2>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="font-semibold">Candidates</h2>
+                  <div className="text-sm text-gray-500">
+                    Showing {filteredResponses.length} of {responses.length}
+                    <button onClick={clearAllFilters} className="ml-3 text-xs text-blue-600 underline">Clear all filters</button>
+                  </div>
+                </div>
 
                 <div className="space-y-4">
-                  {responses.length === 0 && <div className="text-sm text-gray-500">No candidates yet.</div>}
-                  {responses.map(resp => {
+                  {filteredResponses.length === 0 && <div className="text-sm text-gray-500">No candidates match selected filters.</div>}
+                  {filteredResponses.map(resp => {
                     const opening = openings.find(o => o.id === resp.openingId) || {};
                     const candidateName = resolveCandidateName(resp, opening);
                     const candidateLocation = resolveCandidateLocation(resp, opening);
                     const appliedAt = resp.createdAt ? new Date(resp.createdAt).toLocaleString() : '';
+                    const candidateEmail = resolveCandidateEmail(resp);
                     return (
                       <div key={resp.id} className="p-4 border rounded flex justify-between items-start">
                         <div>
@@ -832,6 +950,9 @@ export default function App() {
                           ) : (
                             <div className="text-xs mt-2 text-gray-500">{resp.id}</div>
                           )}
+
+                          {/* show email under name if available */}
+                          {candidateEmail && <div className="text-xs text-gray-500 mt-1">{candidateEmail}</div>}
                         </div>
 
                         <div className="flex flex-col items-end gap-2">
@@ -856,7 +977,113 @@ export default function App() {
 
               <aside className="bg-white rounded-lg p-6 shadow-sm">
                 <h3 className="font-semibold mb-3">Filters</h3>
-                <div className="text-sm text-gray-500">(coming soon) filter by job, status, source, etc.</div>
+
+                <div className="text-sm text-gray-600 mb-3">Select one or more options in each group. Filters combine (AND).</div>
+
+                <div className="space-y-4 text-sm">
+                  {/* Opening (job title) */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="font-medium">Opening</div>
+                      <button onClick={() => clearFilterGroup('openings')} className="text-xs text-blue-600 underline">Clear</button>
+                    </div>
+                    <div className="max-h-40 overflow-auto border rounded p-2">
+                      {filterOptions.openingsByTitle.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
+                      {filterOptions.openingsByTitle.map(title => (
+                        <label key={title} className="flex items-center gap-2 block">
+                          <input type="checkbox" checked={filters.openings.has(title)} onChange={() => toggleFilter('openings', title)} />
+                          <span className="ml-1">{title}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Location */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="font-medium">Location</div>
+                      <button onClick={() => clearFilterGroup('locations')} className="text-xs text-blue-600 underline">Clear</button>
+                    </div>
+                    <div className="max-h-32 overflow-auto border rounded p-2">
+                      {filterOptions.locations.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
+                      {filterOptions.locations.map(loc => (
+                        <label key={loc} className="flex items-center gap-2 block">
+                          <input type="checkbox" checked={filters.locations.has(loc)} onChange={() => toggleFilter('locations', loc)} />
+                          <span className="ml-1">{loc}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Department */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="font-medium">Department</div>
+                      <button onClick={() => clearFilterGroup('departments')} className="text-xs text-blue-600 underline">Clear</button>
+                    </div>
+                    <div className="max-h-28 overflow-auto border rounded p-2">
+                      {filterOptions.departments.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
+                      {filterOptions.departments.map(d => (
+                        <label key={d} className="flex items-center gap-2 block">
+                          <input type="checkbox" checked={filters.departments.has(d)} onChange={() => toggleFilter('departments', d)} />
+                          <span className="ml-1">{d}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Source */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="font-medium">Source</div>
+                      <button onClick={() => clearFilterGroup('sources')} className="text-xs text-blue-600 underline">Clear</button>
+                    </div>
+                    <div className="max-h-28 overflow-auto border rounded p-2">
+                      {filterOptions.sources.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
+                      {filterOptions.sources.map(s => (
+                        <label key={s} className="flex items-center gap-2 block">
+                          <input type="checkbox" checked={filters.sources.has(s)} onChange={() => toggleFilter('sources', s)} />
+                          <span className="ml-1">{s}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Full name */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="font-medium">Full name</div>
+                      <button onClick={() => clearFilterGroup('names')} className="text-xs text-blue-600 underline">Clear</button>
+                    </div>
+                    <div className="max-h-40 overflow-auto border rounded p-2">
+                      {filterOptions.names.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
+                      {filterOptions.names.map(n => (
+                        <label key={n} className="flex items-center gap-2 block">
+                          <input type="checkbox" checked={filters.names.has(n)} onChange={() => toggleFilter('names', n)} />
+                          <span className="ml-1">{n}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Email */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="font-medium">Email</div>
+                      <button onClick={() => clearFilterGroup('emails')} className="text-xs text-blue-600 underline">Clear</button>
+                    </div>
+                    <div className="max-h-40 overflow-auto border rounded p-2 break-all">
+                      {filterOptions.emails.length === 0 && <div className="text-xs text-gray-400">— none —</div>}
+                      {filterOptions.emails.map(em => (
+                        <label key={em} className="flex items-center gap-2 block">
+                          <input type="checkbox" checked={filters.emails.has(em)} onChange={() => toggleFilter('emails', em)} />
+                          <span className="ml-1">{em}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
               </aside>
             </div>
           </>
