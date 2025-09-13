@@ -1,4 +1,4 @@
-// src/App.jsx (full — includes Question Bank + Hiring tab + Form Editor modal per opening)
+// src/App.jsx
 import React, { useState, useEffect } from "react";
 import { v4 as uuidv4 } from "uuid";
 
@@ -102,9 +102,9 @@ export default function App() {
   // public form modal
   const [publicView, setPublicView] = useState(null);
 
-  // NEW: form editor modal (per-opening)
-  const [showFormEditor, setShowFormEditor] = useState(false);
-  const [formEditorOpeningId, setFormEditorOpeningId] = useState(null);
+  // NEW: Form Editor modal per opening
+  const [showFormModal, setShowFormModal] = useState(false);
+  const [formModalOpeningId, setFormModalOpeningId] = useState(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -216,7 +216,7 @@ export default function App() {
   }
 
   /* -------------------------
-     UI functions (create/edit/delete/publish)
+     UI functions (create/edit/delete/publish/save)
      ------------------------- */
   function openCreate() {
     setNewOpening({ title: "", location: "Delhi", department: "", preferredSources: [], durationMins: 30 });
@@ -287,6 +287,7 @@ export default function App() {
 
   // addQuestion now respects server-provided question IDs (if present)
   function addQuestion(openingId, q) {
+    // if question comes from questionBank (has id like q_...), keep that id and treat as reference-style question
     const question = { ...q, id: q.id || uuidv4() };
     setForms((f) => ({ ...f, [openingId]: { ...(f[openingId] || { questions: [] }), questions: [...((f[openingId] && f[openingId].questions) || []), question], meta: f[openingId]?.meta || null } }));
   }
@@ -307,6 +308,7 @@ export default function App() {
   function openCustomModalFor(openingId) {
     setCustomOpeningId(openingId);
     setCustomQ({ label: "", type: "short_text", required: false, optionsText: "" });
+    // ensure it sits above other modals
     setShowCustomModal(true);
   }
 
@@ -319,9 +321,12 @@ export default function App() {
     try {
       if (localStorage.getItem('token')) {
         const created = await apiFetch('/api/questions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        // server returns created question object
         addQuestion(customOpeningId, created);
+        // refresh bank
         await loadQuestionBank();
       } else {
+        // fallback: create a local question object
         const q = { id: `q_local_${Date.now()}`, ...payload };
         addQuestion(customOpeningId, q);
       }
@@ -329,6 +334,55 @@ export default function App() {
     } catch (err) {
       console.error('create bank question', err);
       alert('Could not create question: ' + (err?.body?.error || err.message));
+    }
+  }
+
+  // NEW: save form without publishing
+  async function handleSaveForm(openingId) {
+    const opening = openings.find(o => o.id === openingId);
+    if (!opening) return;
+
+    const questionsToSave = (forms[openingId]?.questions && forms[openingId].questions.length)
+      ? forms[openingId].questions
+      : templateQuestions.slice(0, 5).map(q => ({ ...q, id: uuidv4() }));
+
+    // keep meta if exists, else null
+    const meta = forms[openingId]?.meta || null;
+
+    try {
+      if (!localStorage.getItem('token')) {
+        alert('Not signed in — changes saved locally only.');
+        setForms(f => ({ ...f, [openingId]: { questions: questionsToSave, meta } }));
+        return;
+      }
+
+      // check if server form exists
+      const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
+      let serverForm = (serverForms && serverForms.length) ? serverForms[0] : null;
+      const payload = { openingId, data: { questions: questionsToSave, meta } };
+
+      if (serverForm) {
+        await apiFetch(`/api/forms/${serverForm.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      } else {
+        await apiFetch(`/api/forms`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      }
+
+      // update local state
+      setForms(f => ({ ...f, [openingId]: { questions: questionsToSave, meta } }));
+      alert('Form saved successfully.');
+      // refresh forms map from server to pick up serverFormId/meta if changed
+      await loadForms();
+    } catch (err) {
+      console.error('save form failed', err);
+      alert('Save failed: ' + (err?.body?.error || err?.body?.message || err.message || 'unknown'));
     }
   }
 
@@ -355,15 +409,19 @@ export default function App() {
         alert('Published locally (not persisted). Sign-in to persist forms to server.');
         return;
       }
+      // fetch server form for this opening
       const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
       let serverForm = (serverForms && serverForms.length) ? serverForms[0] : null;
       const payload = { openingId, data: { questions: questionsToPublish, meta } };
 
       if (serverForm) {
-        await apiFetch(`/api/forms/${serverForm.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        // update
+        const updated = await apiFetch(`/api/forms/${serverForm.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        // updated returns form; re-fetch forms to be safe
         await loadForms();
       } else {
-        await apiFetch(`/api/forms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        // create
+        const created = await apiFetch(`/api/forms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         await loadForms();
       }
       alert('Form published and saved to server.');
@@ -404,6 +462,16 @@ export default function App() {
       console.error('delete form failed', err);
       alert('Delete failed: ' + (err?.body?.error || err.message || 'unknown'));
     }
+  }
+
+  // NEW: open the form editor modal for a specific opening
+  function openFormModal(openingId) {
+    setFormModalOpeningId(openingId);
+    setShowFormModal(true);
+  }
+  function closeFormModal() {
+    setShowFormModal(false);
+    setFormModalOpeningId(null);
   }
 
   // NEW: submit public form (unchanged but kept here)
@@ -475,36 +543,21 @@ export default function App() {
       // replace with server response if provided
       if (res && res.updatedResp) {
         setResponses(prev => prev.map(r => r.id === responseId ? res.updatedResp : r));
+      } else if (res && res.updatedResp === undefined && res.updatedResp !== null) {
+        // ignore
+      } else if (res && res.updatedResp === null) {
+        // no-op
       } else {
+        // if returned updatedResp nested differently, try to sync by reloading all responses
         await loadResponses();
       }
     } catch (err) {
       console.error('Failed to update candidate status', err);
       alert('Status update failed: ' + (err?.body?.error || err.message || 'unknown'));
+      // rollback UI (reload from server)
       await loadResponses();
     }
   }
-
-  /* -------------------------
-     Form Editor modal helpers
-     ------------------------- */
-
-  function openFormEditorFor(openingId) {
-    setFormEditorOpeningId(openingId);
-    // if no local form state exists, initialize with template
-    setForms(f => {
-      if (f[openingId]) return f;
-      return { ...f, [openingId]: { questions: templateQuestions.slice(0,5).map(q => ({ ...q, id: uuidv4() })), meta: null } };
-    });
-    setShowFormEditor(true);
-  }
-
-  function closeFormEditor() {
-    setFormEditorOpeningId(null);
-    setShowFormEditor(false);
-  }
-
-  const editorOpening = formEditorOpeningId ? openings.find(o => o.id === formEditorOpeningId) : null;
 
   /* -------------------------
      Render gating
@@ -581,8 +634,9 @@ export default function App() {
                           <div className="text-xs text-gray-500">Responses: {responses.filter(r => r.openingId === op.id).length}</div>
                           <div className="mt-2 flex gap-2">
                             <button onClick={() => handleEditOpeningOpen(op)} className="px-2 py-1 border rounded text-sm">Edit</button>
-                            <button onClick={() => openFormEditorFor(op.id)} className="px-2 py-1 border rounded text-sm">Edit Form</button>
-                            <button onClick={() => { const hasForm = forms[op.id]?.meta?.isPublished; if (hasForm) { alert('Form link available in Form Editor > share'); } else { alert('Form not published yet. Open Edit Form and Publish.'); } }} className="px-2 py-1 bg-blue-600 text-white rounded text-sm">Get Link</button>
+
+                            {/* OPEN FORM EDITOR MODAL */}
+                            <button onClick={() => openFormModal(op.id)} className="px-2 py-1 bg-blue-600 text-white rounded text-sm">Open Form Editor</button>
                           </div>
                         </div>
                       </div>
@@ -643,8 +697,8 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-3">
                     <button onClick={() => handleEditOpeningOpen(op)} className="px-3 py-1 border rounded">Edit</button>
-                    <button onClick={() => openFormEditorFor(op.id)} className="px-3 py-1 border rounded">Edit Form</button>
                     <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
+                    <button onClick={() => openFormModal(op.id)} className="px-3 py-1 bg-blue-600 text-white rounded">Form Editor</button>
                     <button onClick={() => handleDeleteOpening(op.id)} className="text-red-600 flex items-center gap-1"><Icon name="trash" /> Delete</button>
                   </div>
                 </div>
@@ -663,6 +717,7 @@ export default function App() {
                   <h2 className="font-semibold">{op.title} ({op.location})</h2>
                   <div className="flex gap-2">
                     <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
+                    <button onClick={() => handleSaveForm(op.id)} className="px-3 py-1 border rounded">Save</button>
                     <button onClick={() => handlePublishForm(op.id)} className="px-3 py-1 bg-green-600 text-white rounded">Publish</button>
                     <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-1 border rounded text-red-600">Delete Saved Form</button>
                   </div>
@@ -671,6 +726,7 @@ export default function App() {
                 <div className="flex gap-6">
                   <div className="w-1/3 border-r pr-4">
                     <h3 className="font-semibold mb-2">Question Bank</h3>
+                    {/* show question bank (server-backed) */}
                     {questionBank.length === 0 ? (
                       <div className="text-xs text-gray-400">No questions in bank yet. Create one using "+ Custom Question" or via the modal.</div>
                     ) : (
@@ -681,6 +737,7 @@ export default function App() {
                         </div>
                       ))
                     )}
+
                     <div className="mt-4">
                       <div className="text-xs text-gray-500">Or use template items</div>
                       {templateQuestions.map(t => (
@@ -800,7 +857,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Modals (create/edit/custom/public form + form-editor modal) */}
+      {/* Modals (create/edit/custom/public form, + new Form Editor modal) */}
       {showCreate && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-[720px] shadow-xl">
@@ -901,8 +958,114 @@ export default function App() {
         </div>
       )}
 
+      {/* FORM EDITOR MODAL (per opening) */}
+      {showFormModal && formModalOpeningId && (() => {
+        const op = openings.find(o => o.id === formModalOpeningId) || { id: formModalOpeningId, title: 'Opening' };
+        const formObj = forms[formModalOpeningId] || { questions: [], meta: null };
+        return (
+          <div key={"formmodal_" + formModalOpeningId} className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 w-[920px] max-h-[90vh] overflow-auto shadow-xl">
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <h3 className="text-lg font-semibold mb-1">Form Editor — {op.title}</h3>
+                  <div className="text-xs text-gray-500">Edit questions, save, publish, or share links.</div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
+                  <button onClick={() => handleSaveForm(op.id)} className="px-3 py-1 border rounded">Save</button>
+                  <button onClick={() => handlePublishForm(op.id)} className="px-3 py-1 bg-green-600 text-white rounded">Publish</button>
+                  <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-1 border rounded text-red-600">Delete Saved Form</button>
+                  <button onClick={() => closeFormModal()} className="px-3 py-1 border rounded">Close</button>
+                </div>
+              </div>
+
+              <div className="flex gap-6">
+                <div className="w-1/3 border-r pr-4">
+                  <h3 className="font-semibold mb-2">Question Bank</h3>
+                  {questionBank.length === 0 ? (
+                    <div className="text-xs text-gray-400">No questions in bank yet. Create one using "+ Custom Question" or via the modal.</div>
+                  ) : (
+                    questionBank.map(q => (
+                      <div key={q.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(op.id, q)}>
+                        <div className="font-medium">{q.label}</div>
+                        <div className="text-xs text-gray-500">{q.type}{q.required ? ' • required' : ''}</div>
+                      </div>
+                    ))
+                  )}
+                  <div className="mt-4">
+                    <div className="text-xs text-gray-500">Or use template items</div>
+                    {templateQuestions.map(t => (
+                      <div key={t.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(op.id, t)}>{t.label}</div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="w-1/3">
+                  <h3 className="font-semibold mb-2">Form Questions</h3>
+                  <ul>
+                    {(formObj.questions || []).map((q, idx) => (
+                      <li key={q.id} draggable onDragStart={(e) => e.dataTransfer.setData('from', idx)} onDrop={(e) => { const from = parseInt(e.dataTransfer.getData('from')); onDrag(op.id, from, idx); }} onDragOver={(e) => e.preventDefault()} className="p-2 border mb-2 flex justify-between items-center">
+                        <div>
+                          <div className="font-medium">{q.label}</div>
+                          <div className="text-xs text-gray-500">{q.type}{q.required ? ' • required' : ''}</div>
+                        </div>
+                        <div className="flex gap-2">
+                          <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500">Remove</button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="w-1/3">
+                  <h3 className="font-semibold mb-2">Preview & Share</h3>
+
+                  {formObj.meta?.isPublished ? (
+                    <div>
+                      <div className="text-sm text-gray-600 mb-2">Form published on {new Date(formObj.meta.publishedAt).toLocaleString()}</div>
+
+                      <div className="mb-2">
+                        <div className="text-xs font-semibold">Shareable links (by source)</div>
+                        <ul className="mt-2">
+                          {Object.entries(formObj.meta.shareLinks || {}).map(([src, link]) => (
+                            <li key={src} className="flex items-center justify-between mb-2">
+                              <div className="text-sm">{src}</div>
+                              <div className="flex items-center gap-2">
+                                <button onClick={() => handleCopy(link)} className="px-2 py-1 border rounded text-xs">Copy</button>
+                                <button onClick={() => openPublicFormByLink(op.id, src)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+
+                      <div className="mt-3">
+                        <div className="text-xs font-semibold">Generic link</div>
+                        <div className="flex items-center gap-2 mt-2">
+                          <div className="text-sm break-all">{formObj.meta.genericLink}</div>
+                          <button onClick={() => handleCopy(formObj.meta.genericLink)} className="px-2 py-1 border rounded text-xs">Copy</button>
+                          <button onClick={() => openPublicFormByLink(op.id, undefined)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-sm text-gray-500">Form not yet published. Click Publish to generate shareable links per source.</div>
+                  )}
+
+                  <div className="mt-4">
+                    <div className="text-xs font-semibold">Live response count</div>
+                    <div className="text-lg font-medium mt-1">{responses.filter(r => r.openingId === op.id).length}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {showCustomModal && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+        // NOTE: higher z-index so it sits above the Form Editor modal
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-60">
           <div className="bg-white rounded-lg p-6 w-[560px] shadow-xl">
             <h3 className="text-lg font-semibold mb-3">Add Custom Question</h3>
             <form onSubmit={handleAddCustomQuestion} className="space-y-3">
@@ -934,104 +1097,6 @@ export default function App() {
                 <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded">Add Question</button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* Form Editor Modal (new) */}
-      {showFormEditor && editorOpening && (
-        <div className="fixed inset-0 bg-black/40 flex items-start justify-center z-50 pt-16">
-          <div className="bg-white rounded-lg p-6 w-[920px] max-h-[80vh] overflow-auto shadow-xl">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold">Form Editor — {editorOpening.title} ({editorOpening.location})</h3>
-              <div className="flex gap-2">
-                <button onClick={() => openCustomModalFor(editorOpening.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
-                <button onClick={() => handlePublishForm(editorOpening.id)} className="px-3 py-1 bg-green-600 text-white rounded">Publish</button>
-                <button onClick={() => deleteFormByOpening(editorOpening.id)} className="px-3 py-1 border rounded text-red-600">Delete Saved Form</button>
-                <button onClick={closeFormEditor} className="px-3 py-1 border rounded">Close</button>
-              </div>
-            </div>
-
-            <div className="flex gap-6">
-              <div className="w-1/3 border-r pr-4">
-                <h4 className="font-semibold mb-2">Question Bank</h4>
-                {questionBank.length === 0 ? (
-                  <div className="text-xs text-gray-400">No questions in bank yet. Create one using "+ Custom Question" or via the modal.</div>
-                ) : (
-                  questionBank.map(q => (
-                    <div key={q.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(editorOpening.id, q)}>
-                      <div className="font-medium">{q.label}</div>
-                      <div className="text-xs text-gray-500">{q.type}{q.required ? ' • required' : ''}</div>
-                    </div>
-                  ))
-                )}
-
-                <div className="mt-4">
-                  <div className="text-xs text-gray-500">Or use template items</div>
-                  {templateQuestions.map(t => (
-                    <div key={t.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(editorOpening.id, t)}>{t.label}</div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="w-1/3">
-                <h4 className="font-semibold mb-2">Form Questions</h4>
-                <ul>
-                  {(forms[editorOpening.id]?.questions || []).map((q, idx) => (
-                    <li key={q.id} draggable onDragStart={(e) => e.dataTransfer.setData('from', idx)} onDrop={(e) => { const from = parseInt(e.dataTransfer.getData('from')); onDrag(editorOpening.id, from, idx); }} onDragOver={(e) => e.preventDefault()} className="p-2 border mb-2 flex justify-between items-center">
-                      <div>
-                        <div className="font-medium">{q.label}</div>
-                        <div className="text-xs text-gray-500">{q.type}{q.required ? ' • required' : ''}</div>
-                      </div>
-                      <div className="flex gap-2">
-                        <button onClick={() => removeQuestion(editorOpening.id, q.id)} className="text-red-500">Remove</button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              <div className="w-1/3">
-                <h4 className="font-semibold mb-2">Preview & Share</h4>
-
-                {forms[editorOpening.id]?.meta?.isPublished ? (
-                  <div>
-                    <div className="text-sm text-gray-600 mb-2">Form published on {new Date(forms[editorOpening.id].meta.publishedAt).toLocaleString()}</div>
-
-                    <div className="mb-2">
-                      <div className="text-xs font-semibold">Shareable links (by source)</div>
-                      <ul className="mt-2">
-                        {Object.entries(forms[editorOpening.id].meta.shareLinks).map(([src, link]) => (
-                          <li key={src} className="flex items-center justify-between mb-2">
-                            <div className="text-sm">{src}</div>
-                            <div className="flex items-center gap-2">
-                              <button onClick={() => handleCopy(link)} className="px-2 py-1 border rounded text-xs">Copy</button>
-                              <button onClick={() => openPublicFormByLink(editorOpening.id, src)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
-                            </div>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-
-                    <div className="mt-3">
-                      <div className="text-xs font-semibold">Generic link</div>
-                      <div className="flex items-center gap-2 mt-2">
-                        <div className="text-sm break-all">{forms[editorOpening.id].meta.genericLink}</div>
-                        <button onClick={() => handleCopy(forms[editorOpening.id].meta.genericLink)} className="px-2 py-1 border rounded text-xs">Copy</button>
-                        <button onClick={() => openPublicFormByLink(editorOpening.id, undefined)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-sm text-gray-500">Form not yet published. Click Publish to generate shareable links per source.</div>
-                )}
-
-                <div className="mt-4">
-                  <div className="text-xs font-semibold">Live response count</div>
-                  <div className="text-lg font-medium mt-1">{responses.filter(r => r.openingId === editorOpening.id).length}</div>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       )}
