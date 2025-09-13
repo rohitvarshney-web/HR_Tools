@@ -931,7 +931,7 @@ export default function App() {
                               {resp.resumeLink ? (
                                 <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline mr-3">Resume</a>
                               ) : null}
-                              <span className="text-gray-500"> | {resp.id}</span>
+                              <span className="text-gray-500">| {resp.id}</span>
                             </div>
                           </div>
 
