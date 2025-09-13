@@ -102,6 +102,11 @@ export default function App() {
   // public form modal
   const [publicView, setPublicView] = useState(null);
 
+  // NEW: per-opening form modal state
+  const [showFormModal, setShowFormModal] = useState(false);
+  const [formModalOpeningId, setFormModalOpeningId] = useState(null);
+  const [formModalSaving, setFormModalSaving] = useState(false);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tokenFromUrl = params.get('token');
@@ -185,7 +190,7 @@ export default function App() {
     }
   }
 
-  // NEW: load forms from server and map them into forms state keyed by openingId
+  // NOTE: Existing forms endpoints are preserved, but we will favor opening.schema endpoints for modal.
   async function loadForms() {
     try {
       if (!localStorage.getItem('token')) return;
@@ -332,7 +337,7 @@ export default function App() {
     }
   }
 
-  // NEW: publish form (persist to server as form record with questions + meta)
+  // PUBLISH form kept (unchanged)
   async function handlePublishForm(openingId) {
     const opening = openings.find(o => o.id === openingId);
     if (!opening) return;
@@ -385,7 +390,7 @@ export default function App() {
     setPublicView({ openingId, source, submitted: false });
   }
 
-  // NEW: delete single form (server-side if authenticated)
+  // delete form kept
   async function deleteFormByOpening(openingId) {
     if (!confirm('Delete the server-saved form for this opening?')) return;
     try {
@@ -410,7 +415,7 @@ export default function App() {
     }
   }
 
-  // NEW: submit public form (unchanged but kept here)
+  // PUBLIC submit unchanged
   async function handlePublicSubmit(e) {
     e.preventDefault();
     const formEl = e.target;
@@ -496,6 +501,84 @@ export default function App() {
   }
 
   /* -------------------------
+     New: per-opening schema load/save helpers
+     ------------------------- */
+
+  // Open the form modal for an opening: fetch opening.schema (if authenticated) or fallback to local forms map
+  async function openFormModal(openingId) {
+    setFormModalOpeningId(openingId);
+    // if we have forms[openingId] already, prefer that immediately for snappy UI
+    const existing = forms[openingId];
+    if (existing && Array.isArray(existing.questions) && existing.questions.length) {
+      setShowFormModal(true);
+    } else {
+      // set a placeholder while loading
+      setForms(f => ({ ...f, [openingId]: { ...(f[openingId] || {}), questions: [] } }));
+      setShowFormModal(true);
+    }
+
+    // Try to fetch opening.schema from backend (if authed)
+    try {
+      if (!localStorage.getItem('token')) {
+        // unauthenticated: keep local form (or template)
+        setForms(f => ({ ...f, [openingId]: f[openingId] && f[openingId].questions && f[openingId].questions.length ? f[openingId] : { questions: templateQuestions.slice(0,5).map(q => ({ ...q, id: uuidv4() })), meta: null } }));
+        return;
+      }
+      const res = await apiFetch(`/api/openings/${encodeURIComponent(openingId)}/schema`);
+      const schema = (res && res.schema && Array.isArray(res.schema)) ? res.schema : null;
+      if (schema) {
+        setForms(f => ({ ...f, [openingId]: { ...f[openingId], questions: schema, meta: f[openingId]?.meta || null } }));
+      } else {
+        // fallback to any existing form or template
+        setForms(f => ({ ...f, [openingId]: f[openingId] && f[openingId].questions && f[openingId].questions.length ? f[openingId] : { questions: templateQuestions.slice(0,5).map(q => ({ ...q, id: uuidv4() })), meta: null } }));
+      }
+    } catch (err) {
+      console.warn('Failed to load opening schema, using local/template', err);
+      setForms(f => ({ ...f, [openingId]: f[openingId] && f[openingId].questions && f[openingId].questions.length ? f[openingId] : { questions: templateQuestions.slice(0,5).map(q => ({ ...q, id: uuidv4() })), meta: null } }));
+    }
+  }
+
+  // Save the modal's schema back to opening.schema (PUT /api/openings/:id/schema)
+  async function saveFormModal() {
+    if (!formModalOpeningId) return;
+    const openingId = formModalOpeningId;
+    const payload = (forms[openingId] && Array.isArray(forms[openingId].questions)) ? forms[openingId].questions : [];
+    // optimistic UI: set saving state
+    setFormModalSaving(true);
+    try {
+      if (!localStorage.getItem('token')) {
+        // not authed: keep local only
+        alert('Saved locally (not persisted). Sign-in to persist opening schema to server.');
+        setFormModalSaving(false);
+        setShowFormModal(false);
+        return;
+      }
+      await apiFetch(`/api/openings/${encodeURIComponent(openingId)}/schema`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ schema: payload }) });
+      // update local forms map meta if needed
+      setForms(f => ({ ...f, [openingId]: { ...(f[openingId] || {}), questions: payload } }));
+      alert('Opening form schema saved.');
+      setShowFormModal(false);
+    } catch (err) {
+      console.error('Failed to save opening schema', err);
+      alert('Save failed: ' + (err?.body?.error || err.message || 'unknown'));
+    } finally {
+      setFormModalSaving(false);
+    }
+  }
+
+  // NEW small helper to add a question directly to the modal's opening (wrap existing addQuestion)
+  function addQuestionToModal(q) {
+    if (!formModalOpeningId) return;
+    addQuestion(formModalOpeningId, q);
+  }
+
+  // NEW small helper to remove question in modal
+  function removeQuestionFromModal(qid) {
+    if (!formModalOpeningId) return;
+    removeQuestion(formModalOpeningId, qid);
+  }
+
+  /* -------------------------
      Render gating
      ------------------------- */
   if (!authChecked) {
@@ -540,7 +623,7 @@ export default function App() {
           <nav className="space-y-2">
             <div onClick={() => setActiveTab("overview")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'overview' ? 'bg-gray-800' : ''}`}>{<Icon name="menu" />} Overview</div>
             <div onClick={() => setActiveTab("jobs")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'jobs' ? 'bg-gray-800' : ''}`}>Jobs</div>
-            <div onClick={() => setActiveTab("forms")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'forms' ? 'bg-gray-800' : ''}`}>Form Editor</div>
+            {/* Form Editor tab removed as per requested change */}
             <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg-gray-800' : ''}`}>Hiring</div>
           </nav>
         </div>
@@ -570,7 +653,8 @@ export default function App() {
                           <div className="text-xs text-gray-500">Responses: {responses.filter(r => r.openingId === op.id).length}</div>
                           <div className="mt-2 flex gap-2">
                             <button onClick={() => handleEditOpeningOpen(op)} className="px-2 py-1 border rounded text-sm">Edit</button>
-                            <button onClick={() => { const hasForm = forms[op.id]?.meta?.isPublished; if (hasForm) { alert('Form link available in Form Editor > share'); } else { alert('Form not published yet. Go to Form Editor and Publish.'); } }} className="px-2 py-1 bg-blue-600 text-white rounded text-sm">Get Link</button>
+                            <button onClick={() => openFormModal(op.id)} className="px-2 py-1 bg-indigo-600 text-white rounded text-sm">Edit Form</button>
+                            <button onClick={() => { const hasForm = forms[op.id]?.meta?.isPublished; if (hasForm) { alert('Form link available in shareable links inside the form modal'); } else { alert('Form not published yet. Use Edit Form to create and publish.'); } }} className="px-2 py-1 bg-blue-600 text-white rounded text-sm">Get Link</button>
                           </div>
                         </div>
                       </div>
@@ -632,6 +716,7 @@ export default function App() {
                   <div className="flex items-center gap-3">
                     <button onClick={() => handleEditOpeningOpen(op)} className="px-3 py-1 border rounded">Edit</button>
                     <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
+                    <button onClick={() => openFormModal(op.id)} className="px-3 py-1 bg-indigo-600 text-white rounded">Edit Form</button>
                     <button onClick={() => handleDeleteOpening(op.id)} className="text-red-600 flex items-center gap-1"><Icon name="trash" /> Delete</button>
                   </div>
                 </div>
@@ -640,106 +725,7 @@ export default function App() {
           </>
         )}
 
-        {activeTab === "forms" && (
-          <>
-            <h1 className="text-2xl font-semibold mb-6">Form Editor</h1>
-
-            {openings.map(op => (
-              <div key={op.id} className="mb-10 bg-white p-6 rounded shadow">
-                <div className="flex justify-between items-center mb-3">
-                  <h2 className="font-semibold">{op.title} ({op.location})</h2>
-                  <div className="flex gap-2">
-                    <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
-                    <button onClick={() => handlePublishForm(op.id)} className="px-3 py-1 bg-green-600 text-white rounded">Publish</button>
-                    <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-1 border rounded text-red-600">Delete Saved Form</button>
-                  </div>
-                </div>
-
-                <div className="flex gap-6">
-                  <div className="w-1/3 border-r pr-4">
-                    <h3 className="font-semibold mb-2">Question Bank</h3>
-                    {/* show question bank (server-backed) */}
-                    {questionBank.length === 0 ? (
-                      <div className="text-xs text-gray-400">No questions in bank yet. Create one using "+ Custom Question" or via the modal.</div>
-                    ) : (
-                      questionBank.map(q => (
-                        <div key={q.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(op.id, q)}>
-                          <div className="font-medium">{q.label}</div>
-                          <div className="text-xs text-gray-500">{q.type}{q.required ? ' • required' : ''}</div>
-                        </div>
-                      ))
-                    )}
-
-                    <div className="mt-4">
-                      <div className="text-xs text-gray-500">Or use template items</div>
-                      {templateQuestions.map(t => (
-                        <div key={t.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(op.id, t)}>{t.label}</div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="w-1/3">
-                    <h3 className="font-semibold mb-2">Form Questions</h3>
-                    <ul>
-                      {(forms[op.id]?.questions || []).map((q, idx) => (
-                        <li key={q.id} draggable onDragStart={(e) => e.dataTransfer.setData('from', idx)} onDrop={(e) => { const from = parseInt(e.dataTransfer.getData('from')); onDrag(op.id, from, idx); }} onDragOver={(e) => e.preventDefault()} className="p-2 border mb-2 flex justify-between items-center">
-                          <div>
-                            <div className="font-medium">{q.label}</div>
-                            <div className="text-xs text-gray-500">{q.type}{q.required ? ' • required' : ''}</div>
-                          </div>
-                          <div className="flex gap-2">
-                            <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500">Remove</button>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  <div className="w-1/3">
-                    <h3 className="font-semibold mb-2">Preview & Share</h3>
-
-                    {forms[op.id]?.meta?.isPublished ? (
-                      <div>
-                        <div className="text-sm text-gray-600 mb-2">Form published on {new Date(forms[op.id].meta.publishedAt).toLocaleString()}</div>
-
-                        <div className="mb-2">
-                          <div className="text-xs font-semibold">Shareable links (by source)</div>
-                          <ul className="mt-2">
-                            {Object.entries(forms[op.id].meta.shareLinks).map(([src, link]) => (
-                              <li key={src} className="flex items-center justify-between mb-2">
-                                <div className="text-sm">{src}</div>
-                                <div className="flex items-center gap-2">
-                                  <button onClick={() => handleCopy(link)} className="px-2 py-1 border rounded text-xs">Copy</button>
-                                  <button onClick={() => openPublicFormByLink(op.id, src)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
-                                </div>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-
-                        <div className="mt-3">
-                          <div className="text-xs font-semibold">Generic link</div>
-                          <div className="flex items-center gap-2 mt-2">
-                            <div className="text-sm break-all">{forms[op.id].meta.genericLink}</div>
-                            <button onClick={() => handleCopy(forms[op.id].meta.genericLink)} className="px-2 py-1 border rounded text-xs">Copy</button>
-                            <button onClick={() => openPublicFormByLink(op.id, undefined)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="text-sm text-gray-500">Form not yet published. Click Publish to generate shareable links per source.</div>
-                    )}
-
-                    <div className="mt-4">
-                      <div className="text-xs font-semibold">Live response count</div>
-                      <div className="text-lg font-medium mt-1">{responses.filter(r => r.openingId === op.id).length}</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </>
-        )}
+        {/* forms tab removed from main nav; form editing moves to per-opening modal */}
 
         {activeTab === "hiring" && (
           <>
@@ -789,7 +775,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Modals (create/edit/custom/public form) */}
+      {/* Modals (create/edit/custom/public form + NEW per-opening form modal) */}
       {showCreate && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-[720px] shadow-xl">
@@ -923,6 +909,77 @@ export default function App() {
                 <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded">Add Question</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* NEW: Per-opening Form Modal */}
+      {showFormModal && formModalOpeningId && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-[900px] max-h-[90vh] overflow-auto shadow-xl">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h3 className="text-2xl font-semibold">Form Editor</h3>
+                <div className="text-sm text-gray-500">Editing form for opening: {openings.find(o => o.id === formModalOpeningId)?.title || formModalOpeningId}</div>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => { setShowFormModal(false); setFormModalOpeningId(null); }} className="px-3 py-2 border rounded">Close</button>
+                <button onClick={saveFormModal} disabled={formModalSaving} className="px-3 py-2 bg-indigo-600 text-white rounded">{formModalSaving ? 'Saving...' : 'Save to Opening'}</button>
+              </div>
+            </div>
+
+            <div className="flex gap-6">
+              <div className="w-1/3 border-r pr-4">
+                <h4 className="font-semibold mb-2">Question Bank</h4>
+                {questionBank.length === 0 ? (
+                  <div className="text-xs text-gray-400">No questions in bank yet. Create one using "+ Custom Question" or via the modal.</div>
+                ) : (
+                  questionBank.map(q => (
+                    <div key={q.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestionToModal(q)}>
+                      <div className="font-medium">{q.label}</div>
+                      <div className="text-xs text-gray-500">{q.type}{q.required ? ' • required' : ''}</div>
+                    </div>
+                  ))
+                )}
+
+                <div className="mt-4">
+                  <div className="text-xs text-gray-500">Or use template items</div>
+                  {templateQuestions.map(t => (
+                    <div key={t.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestionToModal({ ...t, id: uuidv4() })}>{t.label}</div>
+                  ))}
+                </div>
+
+                <div className="mt-4">
+                  <button onClick={() => openCustomModalFor(formModalOpeningId)} className="px-3 py-2 w-full border rounded">+ Custom Question</button>
+                </div>
+              </div>
+
+              <div className="w-2/3">
+                <h4 className="font-semibold mb-2">Form Questions</h4>
+                <ul>
+                  {(forms[formModalOpeningId]?.questions || []).map((q, idx) => (
+                    <li key={q.id} draggable onDragStart={(e) => e.dataTransfer.setData('from', idx)} onDrop={(e) => { const from = parseInt(e.dataTransfer.getData('from')); onDrag(formModalOpeningId, from, idx); }} onDragOver={(e) => e.preventDefault()} className="p-2 border mb-2 flex justify-between items-center">
+                      <div>
+                        <div className="font-medium">{q.label}</div>
+                        <div className="text-xs text-gray-500">{q.type}{q.required ? ' • required' : ''}</div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button onClick={() => removeQuestionFromModal(q.id)} className="text-red-500">Remove</button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+
+                <div className="mt-6">
+                  <h5 className="font-semibold mb-2">Preview share/publish</h5>
+                  <div className="text-sm text-gray-500 mb-2">Publishing or share links are generated via the Publish flow (keeps compatibility with your existing server forms if you use them).</div>
+                  <div className="flex gap-2">
+                    <button onClick={() => handlePublishForm(formModalOpeningId)} className="px-3 py-2 bg-green-600 text-white rounded">Publish</button>
+                    <button onClick={() => deleteFormByOpening(formModalOpeningId)} className="px-3 py-2 border rounded text-red-600">Delete Saved Form</button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
