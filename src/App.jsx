@@ -810,15 +810,10 @@ export default function App() {
                     return (
                       <div key={resp.id} className="p-4 border rounded flex justify-between items-start">
                         <div>
-                          {/* show candidate full name (prominent) */}
                           <div className="font-semibold">{candidateName}</div>
-
-                          {/* show opening/location/date line */}
                           <div className="text-xs text-gray-500">
-                            {/* If there's an opening title, still show it as context after location/date */}
-                            {candidateLocation ? `${candidateLocation} • ` : ''}
-                            Applied on: {new Date(resp.createdAt).toLocaleString()}
                             {opening.title ? ` • ${opening.title}` : ''}
+                            {candidateLocation ? `${candidateLocation} • ` : ''}
                           </div>
 
                           <div className="text-xs text-gray-500 mt-2">Source: {resp.source}</div>
@@ -835,7 +830,10 @@ export default function App() {
                             <option>Hired</option>
                             <option>Rejected</option>
                           </select>
-                          <div className="text-xs text-gray-400 mt-1">{resp.id}</div>
+                          <div className="text-xs text-gray-400 mt-1">
+                              {resp.id}
+                              Applied on: {new Date(resp.createdAt).toLocaleString()}
+                          </div>
                         </div>
                       </div>
                     );
