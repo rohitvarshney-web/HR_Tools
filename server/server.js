@@ -682,6 +682,41 @@ app.post('/public/openings/:id/schema', async (req, res) => {
   } catch (err) { console.error('POST /public/openings/:id/schema', err); return res.status(500).json({ error: 'server_error' }); }
 });
 
+/*
+  NEW: Protected endpoints to get/update an opening's schema.
+  Purpose: frontend modal (form editor per-opening) can fetch and persist schema directly on the opening
+  without needing to manage separate "forms" entries. This keeps the Form tab removable while keeping
+  functionality for per-opening forms via the opening.schema field.
+*/
+app.get('/api/openings/:id/schema', authMiddleware, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const op = await getOpeningFromStore(id);
+    if (!op) return res.status(404).json({ error: 'opening_not_found' });
+    return res.json({ schema: op.schema || null });
+  } catch (err) {
+    console.error('GET /api/openings/:id/schema', err);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+app.put('/api/openings/:id/schema', authMiddleware, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const schema = req.body.schema;
+    if (!schema || !Array.isArray(schema)) return res.status(400).json({ error: 'missing_or_invalid_schema' });
+    const op = await getOpeningFromStore(id);
+    if (!op) return res.status(404).json({ error: 'opening_not_found' });
+    op.schema = schema;
+    const updatedAt = new Date().toISOString();
+    await updateOpeningInStore(id, { schema: op.schema, updatedAt });
+    return res.json({ ok: true, schema: op.schema });
+  } catch (err) {
+    console.error('PUT /api/openings/:id/schema', err);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
 /* Apply endpoint - store response, upload resume to Drive (strict: no local fallback), append to Sheet and record sheetRange */
 app.post('/api/apply', upload.single('resume'), async (req, res) => {
   try {
