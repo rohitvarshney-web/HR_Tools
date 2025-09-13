@@ -969,11 +969,10 @@ export default function App() {
 
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <div className="text-sm font-medium">Opening</div>
                     <div />
                   </div>
                   <MultiSelectDropdown
-                    Label="Opening"
+                    label="Opening"
                     options={openingOptions}
                     selected={filterOpenings}
                     onChange={setFilterOpenings}
@@ -982,10 +981,10 @@ export default function App() {
                   />
 
                   <div className="mt-4 flex items-center justify-between">
-                    <div className="text-sm font-medium">Location</div>
                     <div />
                   </div>
                   <MultiSelectDropdown
+                    label="Location"
                     options={locationOptions}
                     selected={filterLocations}
                     onChange={setFilterLocations}
@@ -994,10 +993,10 @@ export default function App() {
                   />
 
                   <div className="mt-4 flex items-center justify-between">
-                    <div className="text-sm font-medium">Department</div>
                     <div />
                   </div>
                   <MultiSelectDropdown
+                    label="Department"
                     options={departmentOptions}
                     selected={filterDepartments}
                     onChange={setFilterDepartments}
@@ -1006,10 +1005,10 @@ export default function App() {
                   />
 
                   <div className="mt-4 flex items-center justify-between">
-                    <div className="text-sm font-medium">Source</div>
                     <div />
                   </div>
                   <MultiSelectDropdown
+                    label="Source"
                     options={sourceOptions}
                     selected={filterSources}
                     onChange={setFilterSources}
@@ -1018,10 +1017,10 @@ export default function App() {
                   />
 
                   <div className="mt-4 flex items-center justify-between">
-                    <div className="text-sm font-medium">Candidate</div>
                     <div />
                   </div>
                   <MultiSelectDropdown
+                    label="Candidate"
                     options={nameOptions}
                     selected={filterFullNames}
                     onChange={setFilterFullNames}
@@ -1030,10 +1029,10 @@ export default function App() {
                   />
 
                   <div className="mt-4 flex items-center justify-between">
-                    <div className="text-sm font-medium">Email</div>
                     <div />
                   </div>
                   <MultiSelectDropdown
+                    label="Email"
                     options={emailOptions}
                     selected={filterEmails}
                     onChange={setFilterEmails}
@@ -1042,10 +1041,10 @@ export default function App() {
                   />
 
                   <div className="mt-4 flex items-center justify-between">
-                    <div className="text-sm font-medium">Status</div>
                     <div />
                   </div>
                   <MultiSelectDropdown
+                    label="Status"
                     options={statusOptions}
                     selected={filterStatus}
                     onChange={setFilterStatus}
