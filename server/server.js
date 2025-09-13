@@ -337,6 +337,11 @@ async function getFormFromStore(id) {
   const arr = readJsonFile(FORMS_FILE, []);
   return arr.find(f => f.id === id);
 }
+async function getFormForOpeningFromStore(openingId) {
+  // helper to fetch form for openingId (returns first form found)
+  const forms = await listFormsFromStore(openingId);
+  return (forms && forms.length) ? forms[0] : null;
+}
 async function createFormInStore(form) {
   if (db) { await db.collection('forms').insertOne(form); return form; }
   const arr = readJsonFile(FORMS_FILE, []);
@@ -377,6 +382,7 @@ async function listQuestionsFromStore() {
   return readJsonFile(QUESTIONS_FILE, []);
 }
 async function getQuestionFromStore(id) {
+  if (!id) return null;
   if (db) return normalizeDoc(await db.collection('questions').findOne({ id }));
   const arr = readJsonFile(QUESTIONS_FILE, []);
   return arr.find(q => q.id === id);
@@ -682,7 +688,12 @@ app.post('/public/openings/:id/schema', async (req, res) => {
   } catch (err) { console.error('POST /public/openings/:id/schema', err); return res.status(500).json({ error: 'server_error' }); }
 });
 
-/* Apply endpoint - store response, upload resume to Drive (strict: no local fallback), append to Sheet and record sheetRange */
+/* Apply endpoint - store response, upload resume to Drive (strict: no local fallback), append to Sheet and record sheetRange
+   Updated to:
+   - map submitted answer keys (ids or labels) to question labels using form schema (if available)
+   - extract mandatory fields (fullName, email, phone, resumeLink) to top-level response fields
+   - append sheet row with separate columns for those fields
+*/
 app.post('/api/apply', upload.single('resume'), async (req, res) => {
   try {
     const openingId = req.query.opening || req.body.opening;
@@ -691,6 +702,7 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
 
     const opening = await getOpeningFromStore(openingId) || readData().openings.find(o => o.id === openingId);
     const openingTitle = opening ? opening.title : null;
+    const openingLocation = opening ? opening.location : null; // NEW
 
     // resume upload (strict: require Drive upload to succeed)
     let resumeLink = null;
@@ -740,29 +752,186 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
       console.log('No resume file provided in submission.');
     }
 
-    const answers = {};
-    Object.keys(req.body || {}).forEach(k => { answers[k] = req.body[k]; });
+    // collect raw answers posted by frontend (keys can be question ids like "q_123" OR labels if frontend sends labels)
+    const rawAnswers = {};
+    Object.keys(req.body || {}).forEach(k => {
+      // skip special internal keys used for form metadata (opening, src etc.)
+      if (['opening','src','_csrf'].includes(k)) return;
+      rawAnswers[k] = req.body[k];
+    });
 
-    let sheetRange = null;
-    // build row as [timestamp, openingId, openingTitle, src, resumeLink, JSON.stringify(answers)]
-    const rowVals = [ new Date().toISOString(), openingId, openingTitle || '', src, resumeLink || '', JSON.stringify(answers) ];
-    if (SHEET_ID) {
-      try {
-        sheetRange = await appendToSheetReturnRange(SHEET_ID, SHEET_TAB, rowVals);
-        console.log('Appended to sheet, range=', sheetRange);
-      } catch (err) {
-        console.error('appendToSheet error', err && err.message);
-        sheetRange = null;
+    // try to fetch server-stored form for this opening (if any) to resolve question ids -> labels
+    const formForOpening = await getFormForOpeningFromStore(openingId);
+    const formQuestions = (formForOpening && formForOpening.data && Array.isArray(formForOpening.data.questions)) ? formForOpening.data.questions : [];
+
+    // Build mapping from possible keys (ids / questionId / localLabel / id) -> label
+    // For each form question entry, try to resolve a definitive label
+    const idToLabel = {}; // maps possible keys -> label
+    for (const fq of formQuestions) {
+      let label = null;
+      // if fq has embedded label (frontend may save questions inline)
+      if (fq.label) label = fq.label;
+      // if fq.localLabel exists (forms that reference a question with override)
+      if (!label && fq.localLabel) label = fq.localLabel;
+      // if fq.questionId exists, fetch that question to obtain label
+      if (!label && fq.questionId) {
+        const qdoc = await getQuestionFromStore(fq.questionId).catch(()=>null);
+        if (qdoc && qdoc.label) label = qdoc.label;
+      }
+      // if still not found, but fq has nested 'id' and 'label' (some stores save full object)
+      if (!label && fq.id && fq.label) label = fq.label;
+      if (!label && fq.id && fq.localLabel) label = fq.localLabel;
+
+      // fallback: if no label yet, attempt to use fq.title/name fields
+      if (!label && (fq.title || fq.name)) label = fq.title || fq.name;
+
+      if (!label) continue;
+
+      // normalize some keys that might be used by client
+      const possibleKeys = new Set();
+      if (fq.questionId) possibleKeys.add(fq.questionId);
+      if (fq.id) possibleKeys.add(fq.id);
+      // sometimes frontend sends keys prefixed with 'q_' + id or 'q_' + timestamp; include those
+      if (fq.id) possibleKeys.add(`q_${fq.id}`);
+      if (fq.questionId) possibleKeys.add(`q_${fq.questionId}`);
+      // include the label itself as possible incoming key (if frontend posts labels directly)
+      possibleKeys.add(label);
+      possibleKeys.add(label.toLowerCase());
+      // include localLabel
+      if (fq.localLabel) possibleKeys.add(fq.localLabel);
+
+      for (const k of possibleKeys) {
+        if (k) idToLabel[k] = label;
       }
     }
 
-    const resp = { id: `resp_${Date.now()}`, openingId, openingTitle, source: src, resumeLink: resumeLink || null, answers, createdAt: new Date().toISOString(), sheetRange, status: 'Applied' };
+    // Also include global question bank entries (so that if formQuestions only references questionId, or frontend posts a questionId directly)
+    const questionBank = await listQuestionsFromStore();
+    for (const q of (questionBank || [])) {
+      if (!q || !q.id) continue;
+      if (q.label) {
+        idToLabel[q.id] = q.label;
+        idToLabel[`q_${q.id}`] = q.label;
+        idToLabel[q.label] = q.label;
+        idToLabel[q.label.toLowerCase()] = q.label;
+      }
+    }
+
+    // Now normalize rawAnswers into labelAnswers: label -> answer
+    const labelAnswers = {};
+    for (const k of Object.keys(rawAnswers)) {
+      const val = rawAnswers[k];
+      // try exact key lookup in idToLabel
+      let label = idToLabel[k];
+      // try lowercase match
+      if (!label && idToLabel[k.toLowerCase()]) label = idToLabel[k.toLowerCase()];
+      // if key looks like a label already, use it
+      if (!label && typeof k === 'string' && k.trim().length > 0) label = k;
+      // fallback to using stored question bank lookup for stripped key
+      if (!label) {
+        const stripped = k.replace(/^q_/, '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+        const found = Object.keys(idToLabel).find(key => key && key.replace(/^q_/, '').replace(/[^a-z0-9]/gi, '').toLowerCase() === stripped);
+        if (found) label = idToLabel[found];
+      }
+      if (!label) label = k;
+      labelAnswers[label] = val;
+    }
+
+    // Extract mandatory fields into top-level properties (best-effort)
+    // Look for common variations in labels
+    const findAndRemoveFirstMatch = (candidates) => {
+      for (const cand of candidates) {
+        // try exact
+        if (labelAnswers[cand] !== undefined) {
+          const v = labelAnswers[cand];
+          delete labelAnswers[cand];
+          return v;
+        }
+        // try case-insensitive match
+        const foundKey = Object.keys(labelAnswers).find(k => (k || '').toString().toLowerCase().trim() === cand.toLowerCase().trim());
+        if (foundKey) {
+          const v = labelAnswers[foundKey];
+          delete labelAnswers[foundKey];
+          return v;
+        }
+      }
+      // try fuzzy contains match
+      const lowerKeys = Object.keys(labelAnswers).map(k => ({ k, kl: (k||'').toLowerCase() }));
+      for (const cand of candidates) {
+        for (const o of lowerKeys) {
+          if (o.kl.includes(cand.toLowerCase())) {
+            const v = labelAnswers[o.k];
+            delete labelAnswers[o.k];
+            return v;
+          }
+        }
+      }
+      return null;
+    };
+
+    const fullNameCandidates = ['full name','fullname','name','candidate name','applicant name','your name'];
+    const emailCandidates = ['email address','email','e-mail','mail'];
+    const phoneCandidates = ['phone number','phone','mobile','mobile number','contact number'];
+    const resumeCandidates = ['upload resume / cv','upload resume','resume','cv','upload cv','upload resume/cv','upload resume / cv'];
+
+    const extractedFullName = findAndRemoveFirstMatch(fullNameCandidates) || null;
+    const extractedEmail = findAndRemoveFirstMatch(emailCandidates) || null;
+    const extractedPhone = findAndRemoveFirstMatch(phoneCandidates) || null;
+    // For resume, prefer the uploaded resumeLink from Drive if present; otherwise look in labelAnswers
+    const extractedResumeFromAnswers = findAndRemoveFirstMatch(resumeCandidates) || null;
+    const finalResumeLink = resumeLink || extractedResumeFromAnswers || null;
+
+    // Build the response object that will be persisted
+    const resp = {
+      id: `resp_${Date.now()}`,
+      openingId,
+      openingTitle,
+      location: openingLocation || null, // NEW
+      source: src,
+      fullName: extractedFullName || null,
+      email: extractedEmail || null,
+      phone: extractedPhone || null,
+      resumeLink: finalResumeLink,
+      // keep the rest of answers (label -> answer), excluding the mandatory ones we extracted above
+      answers: labelAnswers,
+      createdAt: new Date().toISOString(),
+      status: 'Applied',
+      sheetRange: null
+    };
+
+    // Prepare sheet row.
+    // We put timestamp, openingId, openingTitle, source, fullName, email, phone, resumeLink, JSON(answers)
+    const rowVals = [
+      new Date().toISOString(),
+      openingId,
+      openingTitle || '',
+      openingLocation || '', // NEW column
+      src,
+      resp.fullName || '',
+      resp.email || '',
+      resp.phone || '',
+      resp.resumeLink || '',
+      JSON.stringify(resp.answers || {}) // remaining answers as JSON
+    ];
+
+    let sheetRange = null;
+    if (SHEET_ID) {
+      try {
+        sheetRange = await appendToSheetReturnRange(SHEET_ID, SHEET_TAB, rowVals);
+        resp.sheetRange = sheetRange;
+        console.log('Appended to sheet, range=', sheetRange);
+      } catch (err) {
+        console.error('appendToSheet error', err && err.message);
+        // don't block response — we still persist locally/db
+        resp.sheetRange = null;
+      }
+    }
 
     // persist to DB & file (file kept as legacy)
     try { await createResponseInStore(resp); } catch(e){ console.error('Failed to persist response to store', e && e.message); }
 
     // Respond success (resumeLink always from Drive when present)
-    return res.json({ ok: true, resumeLink, sheetRange });
+    return res.json({ ok: true, resumeLink: resp.resumeLink, sheetRange: resp.sheetRange });
   } catch (err) {
     console.error('Error in /api/apply', err && err.stack);
     return res.status(500).json({ error: 'server_error', message: err?.message || 'unknown' });
