@@ -811,24 +811,25 @@ export default function App() {
                     return (
                       <div key={resp.id} className="p-4 border rounded flex justify-between items-start">
                         <div>
-                          {/* Job name (bold) and location (next line) */}
-                          <div className="font-semibold">{opening.title || '—'}</div>
-                          <div className="text-sm text-gray-500">{candidateLocation || ''}</div>
+                          {/* Candidate name at top */}
+                          <div className="text-lg font-medium">{candidateName}</div>
 
-                          {/* Candidate name shown beneath */}
-                          <div className="mt-2 text-lg font-medium">{candidateName}</div>
+                          {/* Opening name and location inline with small muted style (same as applied/source text) */}
+                          <div className="text-xs text-gray-500 mt-1">
+                            {opening.title || resp.openingId}
+                            {candidateLocation ? ` • ${candidateLocation}` : ''}
+                          </div>
 
                           <div className="text-xs text-gray-500 mt-2">Source: {resp.source}</div>
 
                           {/* Resume link and response id separated by | */}
-                          {resp.resumeLink && (
+                          {resp.resumeLink ? (
                             <div className="text-xs mt-2">
                               <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">Resume</a>
                               <span className="mx-2 text-gray-400">|</span>
                               <span className="text-gray-500">{resp.id}</span>
                             </div>
-                          )}
-                          {!resp.resumeLink && (
+                          ) : (
                             <div className="text-xs mt-2 text-gray-500">{resp.id}</div>
                           )}
                         </div>
@@ -844,7 +845,7 @@ export default function App() {
                             <option>Rejected</option>
                           </select>
 
-                          {/* Applied at moved here (replaces previous position of response id) */}
+                          {/* Applied at moved here */}
                           <div className="text-xs text-gray-400 mt-1">Applied at: {appliedAt}</div>
                         </div>
                       </div>
