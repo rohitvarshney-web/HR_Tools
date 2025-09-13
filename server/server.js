@@ -110,7 +110,7 @@ function ensurePersistenceFilesAndMigrate() {
 }
 ensurePersistenceFilesAndMigrate();
 
-// serve fallback uploads if Drive fails
+// serve fallback uploads if Drive fails (kept for compatibility but NOT used for successful flows)
 app.use('/uploads', express.static(UPLOADS_DIR));
 
 /** ---------- Google Drive & Sheets helpers ---------- **/
@@ -682,7 +682,7 @@ app.post('/public/openings/:id/schema', async (req, res) => {
   } catch (err) { console.error('POST /public/openings/:id/schema', err); return res.status(500).json({ error: 'server_error' }); }
 });
 
-/* Apply endpoint - store response, upload resume to Drive (or fallback), append to Sheet and record sheetRange */
+/* Apply endpoint - store response, upload resume to Drive (strict: no local fallback), append to Sheet and record sheetRange */
 app.post('/api/apply', upload.single('resume'), async (req, res) => {
   try {
     const openingId = req.query.opening || req.body.opening;
@@ -692,42 +692,52 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     const opening = await getOpeningFromStore(openingId) || readData().openings.find(o => o.id === openingId);
     const openingTitle = opening ? opening.title : null;
 
-    // resume upload
+    // resume upload (strict: require Drive upload to succeed)
     let resumeLink = null;
     if (req.file && req.file.buffer) {
       const filename = `${Date.now()}_${(req.file.originalname || 'resume')}`;
+
+      // If DRIVE_FOLDER_ID not configured, return config error to caller
+      if (!DRIVE_FOLDER_ID) {
+        console.error('Drive folder ID not set; cannot upload resume.');
+        return res.status(500).json({ error: 'drive_config_missing', message: 'Server is not configured to upload resumes to Google Drive. Please contact the administrator.' });
+      }
+
       try {
-        resumeLink = await (async () => {
-          if (!DRIVE_FOLDER_ID) throw new Error('DRIVE_FOLDER_ID not set');
-          return await (async () => {
-            const link = await (async () => {
-              const bufferStream = new stream.PassThrough(); bufferStream.end(req.file.buffer);
-              const drive = await getDriveService();
-              const created = await drive.files.create({
-                requestBody: { name: filename, parents: [DRIVE_FOLDER_ID] },
-                media: { mimeType: req.file.mimetype || 'application/octet-stream', body: bufferStream },
-                supportsAllDrives: true,
-                fields: 'id, webViewLink, webContentLink'
-              });
-              const fileId = created.data && created.data.id;
-              try { await drive.permissions.create({ fileId, requestBody: { role: 'reader', type: 'anyone' }, supportsAllDrives: true }); } catch(e){}
-              const meta = await drive.files.get({ fileId, fields: 'id, webViewLink, webContentLink' });
-              return meta.data.webViewLink || meta.data.webContentLink || `https://drive.google.com/file/d/${fileId}/view`;
-            })();
-            return link;
-          })();
-        })();
+        // Upload to Drive and set public read permission (best-effort)
+        const bufferStream = new stream.PassThrough(); bufferStream.end(req.file.buffer);
+        const drive = await getDriveService();
+        const created = await drive.files.create({
+          requestBody: { name: filename, parents: [DRIVE_FOLDER_ID] },
+          media: { mimeType: req.file.mimetype || 'application/octet-stream', body: bufferStream },
+          supportsAllDrives: true,
+          fields: 'id, webViewLink, webContentLink'
+        });
+
+        const fileId = created.data && created.data.id;
+        if (!fileId) {
+          throw new Error('no_file_id_returned');
+        }
+
+        // make file readable by anyone (best-effort; ignore permission errors but still return link)
+        try {
+          await drive.permissions.create({ fileId, requestBody: { role: 'reader', type: 'anyone' }, supportsAllDrives: true });
+        } catch (permErr) {
+          console.warn('drive.permissions.create failed (may be org policy) - continuing, permission error:', permErr && permErr.message);
+        }
+
+        // fetch metadata to pick best link
+        const meta = await drive.files.get({ fileId, fields: 'id, webViewLink, webContentLink' }).catch(() => null);
+        resumeLink = (meta && (meta.data && (meta.data.webViewLink || meta.data.webContentLink))) || `https://drive.google.com/file/d/${fileId}/view`;
         console.log('Drive upload success:', resumeLink);
       } catch (err) {
-        console.error('Drive upload failed:', err && err.message);
-        try {
-          const localPath = path.join(UPLOADS_DIR, filename);
-          fs.writeFileSync(localPath, req.file.buffer);
-          const host = req.get('host'); const protocol = req.protocol;
-          resumeLink = `${protocol}://${host}/uploads/${encodeURIComponent(filename)}`;
-          console.log('Saved fallback file locally at', localPath, '->', resumeLink);
-        } catch (fsErr) { console.error('Failed to save fallback file locally', fsErr && fsErr.message); }
+        console.error('Drive upload failed:', err && (err.stack || err.message));
+        // IMPORTANT: do NOT save file locally. Inform frontend to re-upload.
+        return res.status(502).json({ error: 'drive_upload_failed', message: 'Resume upload to Google Drive failed. Please re-upload your resume.' });
       }
+    } else {
+      // No file uploaded — still allow (maybe form without resume), but set resumeLink null
+      console.log('No resume file provided in submission.');
     }
 
     const answers = {};
@@ -751,7 +761,7 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     // persist to DB & file (file kept as legacy)
     try { await createResponseInStore(resp); } catch(e){ console.error('Failed to persist response to store', e && e.message); }
 
-    // append to sheet already done above
+    // Respond success (resumeLink always from Drive when present)
     return res.json({ ok: true, resumeLink, sheetRange });
   } catch (err) {
     console.error('Error in /api/apply', err && err.stack);
