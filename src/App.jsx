@@ -15,6 +15,10 @@ const Icon = ({ name, className = "w-5 h-5 inline-block" }) => {
   return icons[name] || null;
 };
 
+const LockIcon = ({ className = "w-4 h-4 inline-block text-gray-500" }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V8a5 5 0 0110 0v3"/></svg>
+);
+
 /* -------------------------
    Protected core questions (stable IDs)
    ------------------------- */
@@ -23,19 +27,14 @@ const CORE_QUESTIONS = {
   email: { id: "q_email", type: "email", label: "Email address", required: true },
   phone: { id: "q_phone", type: "short_text", label: "Phone number", required: true },
   resume: { id: "q_resume", type: "file", label: "Upload resume / CV", required: true },
-  college: { id: "q_college", type: "short_text", label: "College / Institute", required: true }, // new core question
+  college: { id: "q_college", type: "short_text", label: "College / Organization", required: true }, // <-- changed label
 };
 const PROTECTED_IDS = new Set(Object.values(CORE_QUESTIONS).map(q => q.id));
 
 /* -------------------------
-   Template data (others use uuids)
+   Template data (non-core only)
    ------------------------- */
 const templateQuestions = [
-  CORE_QUESTIONS.fullName,
-  CORE_QUESTIONS.email,
-  CORE_QUESTIONS.phone,
-  CORE_QUESTIONS.resume,
-  CORE_QUESTIONS.college, // include college as core in templates
   { id: uuidv4(), type: "number", label: "Years of experience" },
   { id: uuidv4(), type: "url", label: "LinkedIn / Portfolio URL" },
   { id: uuidv4(), type: "dropdown", label: "How did you hear about us?", options: ["LinkedIn", "Internshala", "Referral"] },
@@ -57,30 +56,13 @@ const QUESTION_TYPES = [
 
 /* -------------------------
    MultiSelectDropdown
-   - props:
-     label (string)
-     options: [{ value, label }]
-     selected: Set or array of values
-     onChange(selectedArray)
-     placeholder
-     searchEnabled (bool)
-     openUp (bool) -> if true the dropdown opens upwards
-*/
-function MultiSelectDropdown({
-  label,
-  options = [],
-  selected = [],
-  onChange = () => {},
-  placeholder = "Select",
-  searchEnabled = true,
-  openUp = false
-}) {
+  ------------------------- */
+function MultiSelectDropdown({ label, options = [], selected = [], onChange = () => {}, placeholder = "Select", searchEnabled = true }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
 
   useEffect(() => {
     function onDocClick(e) {
-      // close when clicking outside the component root
       if (!e.target.closest || !e.target.closest('.msdd-root')) {
         setOpen(false);
       }
@@ -108,11 +90,6 @@ function MultiSelectDropdown({
     onChange([]);
   }
 
-  // position styles: if openUp -> attach dropdown to bottom of button and place above
-  const dropdownPositionStyle = openUp
-    ? { bottom: '100%', marginBottom: 8, left: 0, right: 0 } // open upwards
-    : { top: '100%', marginTop: 8, left: 0, right: 0 }; // default downwards
-
   return (
     <div className="relative msdd-root" style={{ minWidth: 220 }}>
       <div className="flex items-center justify-between">
@@ -122,23 +99,13 @@ function MultiSelectDropdown({
         </div>
       </div>
 
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        className="mt-2 w-full text-left px-4 py-3 border rounded bg-white flex items-center justify-between"
-      >
+      <button type="button" onClick={() => setOpen(o => !o)} className="mt-2 w-full text-left px-4 py-3 border rounded bg-white flex items-center justify-between">
         <div className="text-sm text-gray-700">{selected.length ? `${selected.length} selected` : placeholder}</div>
         <div>{<Icon name="chevron" />}</div>
       </button>
 
       {open && (
-        <div
-          className="absolute z-50 bg-white border rounded shadow-lg p-3 max-h-64 overflow-auto"
-          style={{
-            ...dropdownPositionStyle,
-            zIndex: 9999
-          }}
-        >
+        <div className="absolute right-0 left-0 z-50 mt-2 bg-white border rounded shadow-lg p-3 max-h-64 overflow-auto">
           {searchEnabled && (
             <div className="mb-2">
               <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search..." className="w-full border p-2 rounded text-sm" />
@@ -159,8 +126,8 @@ function MultiSelectDropdown({
 }
 
 /* -------------------------
-   Simple Login Page Component
-   ------------------------- */
+   Login Page
+  ------------------------- */
 function LoginPage({ backendUrl }) {
   const handleLogin = () => {
     window.location.href = `${backendUrl}/auth/google`;
@@ -185,7 +152,7 @@ function LoginPage({ backendUrl }) {
 
 /* -------------------------
    Main App
-   ------------------------- */
+  ------------------------- */
 export default function App() {
   const API = process.env.REACT_APP_API_URL || 'https://hr-tools-backend.onrender.com';
   const BACKEND = API;
@@ -205,7 +172,13 @@ export default function App() {
   // Custom question modal + form editor states
   const [showCustomModal, setShowCustomModal] = useState(false);
   const [customOpeningId, setCustomOpeningId] = useState(null);
-  const [customQ, setCustomQ] = useState({ label: "", type: "short_text", required: false, optionsText: "" });
+  const [customQ, setCustomQ] = useState({
+    label: "",
+    type: "short_text",
+    required: false,
+    optionsText: "",
+    validation: {}
+  });
 
   const [showEdit, setShowEdit] = useState(false);
   const [editingOpening, setEditingOpening] = useState(null);
@@ -286,11 +259,11 @@ export default function App() {
   }
 
   /* -------------------------
-     Helper: ensure core fields exist in a form object (mutating copy)
+     Helper: ensure core fields exist in a form object
   ------------------------- */
   function ensureCoreFieldsInForm(formObj) {
     const existingIds = new Set((formObj.questions || []).map(q => q.id));
-    // include college in core order
+    // always inject core fields at start in this defined order
     const coreOrder = [CORE_QUESTIONS.fullName, CORE_QUESTIONS.email, CORE_QUESTIONS.phone, CORE_QUESTIONS.resume, CORE_QUESTIONS.college];
     const missing = coreOrder.filter(cq => !existingIds.has(cq.id)).map(cq => ({ ...cq }));
     if (missing.length) {
@@ -298,9 +271,9 @@ export default function App() {
     }
     formObj.questions = (formObj.questions || []).map(q => {
       if (PROTECTED_IDS.has(q.id)) {
-        return { ...q, required: true };
+        return { ...q, required: true, validation: q.validation || {}, pageBreak: q.pageBreak || false };
       }
-      return q;
+      return { ...q, validation: q.validation || {}, pageBreak: q.pageBreak || false };
     });
     formObj.meta = formObj.meta || {};
     formObj.meta.coreFields = formObj.meta.coreFields || {
@@ -343,8 +316,8 @@ export default function App() {
       });
       (openings || []).forEach(op => {
         if (!map[op.id]) {
-          const base = { questions: templateQuestions.slice(0, 5).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } };
-          map[op.id] = base;
+          const base = { questions: templateQuestions.map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } };
+          map[op.id] = ensureCoreFieldsInForm(base);
         }
       });
       setForms(map);
@@ -387,7 +360,8 @@ export default function App() {
         created = { id: res.id, ...payload, createdAt: res.createdAt || new Date().toISOString() };
         setOpenings(s => [created, ...s]);
       }
-      setForms(f => ({ ...f, [created.id]: ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 5).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } }) }));
+      // initialize form with core + non-core template items
+      setForms(f => ({ ...f, [created.id]: ensureCoreFieldsInForm({ questions: templateQuestions.map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } }) }));
       setShowCreate(false);
     } catch (err) {
       console.error('create opening', err);
@@ -427,7 +401,7 @@ export default function App() {
   }
 
   function addQuestion(openingId, q) {
-    const question = { ...q, id: q.id || uuidv4() };
+    const question = { ...q, id: q.id || uuidv4(), validation: q.validation || {}, pageBreak: q.pageBreak || false };
     setForms((f) => {
       const existing = f[openingId] || { questions: [], meta: null };
       const exists = (existing.questions || []).some(x => x.id === question.id);
@@ -450,6 +424,16 @@ export default function App() {
     });
   }
 
+  function togglePageBreak(openingId, qid) {
+    setForms(f => {
+      const copy = { ...f };
+      const obj = copy[openingId] || { questions: [] };
+      obj.questions = (obj.questions || []).map(q => q.id === qid ? { ...q, pageBreak: !q.pageBreak } : q);
+      copy[openingId] = obj;
+      return copy;
+    });
+  }
+
   function onDrag(openingId, from, to) {
     setForms((f) => {
       const arr = [...(f[openingId]?.questions || [])];
@@ -461,14 +445,20 @@ export default function App() {
 
   function openCustomModalFor(openingId) {
     setCustomOpeningId(openingId);
-    setCustomQ({ label: "", type: "short_text", required: false, optionsText: "" });
+    setCustomQ({ label: "", type: "short_text", required: false, optionsText: "", validation: {} });
     setShowCustomModal(true);
   }
 
   async function handleAddCustomQuestion(e) {
     e.preventDefault();
     const options = customQ.optionsText.split("\n").map(s => s.trim()).filter(Boolean);
-    const payload = { label: customQ.label || "Question", type: customQ.type, required: customQ.required, options };
+    const payload = {
+      label: customQ.label || "Question",
+      type: customQ.type,
+      required: !!customQ.required,
+      options,
+      validation: customQ.validation || {}
+    };
     try {
       if (localStorage.getItem('token')) {
         const created = await apiFetch('/api/questions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -561,7 +551,8 @@ export default function App() {
   }
 
   function openPublicFormByLink(openingId, source) {
-    setPublicView({ openingId, source, submitted: false });
+    // initialize page index to 0
+    setPublicView({ openingId, source, submitted: false, page: 0 });
   }
 
   async function deleteFormByOpening(openingId) {
@@ -593,7 +584,7 @@ export default function App() {
     setForms((f) => {
       const copy = { ...f };
       if (!copy[openingId]) {
-        copy[openingId] = ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 5).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } });
+        copy[openingId] = ensureCoreFieldsInForm({ questions: templateQuestions.map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } });
       } else {
         copy[openingId] = ensureCoreFieldsInForm({ questions: (copy[openingId].questions || []).map(q => ({ ...q })), meta: (copy[openingId].meta || {}) });
       }
@@ -607,23 +598,157 @@ export default function App() {
     setFormModalOpeningId(null);
   }
 
+  /* -------------------------
+     Public form submission with validation and top-level core fields
+  ------------------------- */
   async function handlePublicSubmit(e) {
     e.preventDefault();
     const formEl = e.target;
     const openingId = publicView.openingId;
     const source = publicView.source || 'unknown';
-    const fd = new FormData();
 
+    // client-side validation pass using the form questions' validation metadata
+    const formObj = forms[openingId];
+    if (!formObj) {
+      alert('Form schema not found.');
+      return;
+    }
+    const qMap = {};
+    (formObj.questions || []).forEach(q => { qMap[q.id] = q; });
+
+    // collect values and validate
+    const values = {};
     for (let i = 0; i < formEl.elements.length; i++) {
       const el = formEl.elements[i];
       if (!el.name) continue;
       if (el.type === 'file') {
-        if (el.files && el.files[0]) fd.append('resume', el.files[0], el.files[0].name);
+        values[el.name] = el.files && el.files[0] ? el.files[0] : null;
       } else if (el.type === 'checkbox') {
-        if (el.checked) fd.append(el.name, el.value);
+        if (!values[el.name]) values[el.name] = [];
+        if (el.checked) values[el.name].push(el.value);
       } else {
-        fd.append(el.name, el.value);
+        values[el.name] = el.value;
       }
+    }
+
+    // validate each field mapped in schema
+    for (const q of (formObj.questions || [])) {
+      const name = q.id;
+      const val = values[name];
+      // required
+      if (q.required) {
+        if (q.type === 'file') {
+          if (!val) { alert(`${q.label} is required.`); return; }
+        } else if (q.type === 'checkboxes') {
+          if (!val || (Array.isArray(val) && val.length === 0)) { alert(`${q.label} is required.`); return; }
+        } else if (!val || String(val).trim() === "") {
+          alert(`${q.label} is required.`); return;
+        }
+      }
+      const v = q.validation || {};
+      if (q.type === 'short_text' || q.type === 'long_text' || q.type === 'email' || q.type === 'url') {
+        const s = (val || "").toString();
+        if (v.minLength && s.length < Number(v.minLength)) { alert(`${q.label} must be at least ${v.minLength} characters.`); return; }
+        if (v.maxLength && s.length > Number(v.maxLength)) { alert(`${q.label} must be at most ${v.maxLength} characters.`); return; }
+        if (v.pattern) {
+          try {
+            const re = new RegExp(v.pattern);
+            if (!re.test(s)) { alert(`${q.label} has invalid format.`); return; }
+          } catch (err) {
+            // ignore bad regex stored in validation
+          }
+        }
+        if (q.id === CORE_QUESTIONS.email.id || q.type === 'email') {
+          const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          if (s && !emailRe.test(s)) { alert(`${q.label} must be a valid email address.`); return; }
+        }
+      }
+      if (q.id === CORE_QUESTIONS.phone.id || q.label.toLowerCase().includes('phone')) {
+        const s = (val || "").toString().replace(/\D/g, '');
+        if (q.required && s.length === 0) { alert(`${q.label} is required.`); return; }
+        if (s && (s.length < 7 || s.length > 15)) { alert(`${q.label} must be between 7 and 15 digits.`); return; }
+      }
+      if (q.type === 'number') {
+        if (val !== undefined && val !== null && String(val).trim() !== "") {
+          const num = Number(val);
+          if (Number.isNaN(num)) { alert(`${q.label} must be a number.`); return; }
+          if (v.min !== undefined && v.min !== "" && num < Number(v.min)) { alert(`${q.label} must be >= ${v.min}`); return; }
+          if (v.max !== undefined && v.max !== "" && num > Number(v.max)) { alert(`${q.label} must be <= ${v.max}`); return; }
+        }
+      }
+      if (q.type === 'file' && val) {
+        const f = val;
+        if (v.accept && v.accept.length) {
+          const acceptArr = v.accept.split(',').map(s => s.trim().toLowerCase());
+          const ext = (f.name || "").split('.').pop().toLowerCase();
+          if (!acceptArr.includes('.' + ext) && !acceptArr.includes(f.type.toLowerCase())) {
+            alert(`${q.label} must be one of: ${v.accept}`); return;
+          }
+        }
+        if (v.maxFileSize && Number(v.maxFileSize) > 0) {
+          if (f.size > Number(v.maxFileSize)) {
+            alert(`${q.label} must be smaller than ${v.maxFileSize} bytes.`); return;
+          }
+        }
+      }
+    }
+
+    // if all validations passed — build FormData and submit
+    const fd = new FormData();
+
+    // Add answers and files
+    for (const [k, v] of Object.entries(values)) {
+      if (v === null || v === undefined) continue;
+      if (v instanceof File) {
+        // append under its question id
+        fd.append(k, v, v.name);
+        // ALSO append under a stable key the server might expect (prevent Multer Unexpected field)
+        // If the file is the core resume field, append as 'resume' too
+        const lk = (k || "").toLowerCase();
+        if (k === CORE_QUESTIONS.resume.id || lk.includes('resume') || lk.includes('cv') || lk.includes('upload_resume')) {
+          try {
+            fd.append('resume', v, v.name);
+            fd.append('resumeFile', v, v.name);
+            fd.append('cv', v, v.name);
+          } catch (err) {
+            // some browsers may throw on double appends of the same File object in some environments - ignore
+          }
+        }
+      } else if (Array.isArray(v)) {
+        v.forEach(item => fd.append(k, item));
+      } else {
+        fd.append(k, v);
+      }
+    }
+
+    // Also append top-level core fields so backend receives them as first-class fields
+    // (so they can be saved into the top-level response properties and Google Sheet columns)
+    try {
+      const core = formObj.meta?.coreFields || {};
+      const fullnameVal = values[core.fullNameId] || values[CORE_QUESTIONS.fullName.id] || "";
+      const emailVal = values[core.emailId] || values[CORE_QUESTIONS.email.id] || "";
+      const phoneVal = values[core.phoneId] || values[CORE_QUESTIONS.phone.id] || "";
+      const collegeVal = values[core.collegeId] || values[CORE_QUESTIONS.college.id] || "";
+
+      if (fullnameVal) fd.append('fullName', fullnameVal);
+      if (emailVal) fd.append('email', emailVal);
+      if (phoneVal) fd.append('phone', phoneVal);
+      if (collegeVal) fd.append('college', collegeVal);
+    } catch (err) {
+      // swallow errors - not critical
+    }
+
+    // DEBUG: print FormData entries so you can inspect in DevTools Console
+    try {
+      for (const pair of fd.entries()) {
+        if (pair[1] instanceof File) {
+          console.log('FormData file:', pair[0], pair[1].name, pair[1].type, pair[1].size);
+        } else {
+          console.log('FormData value:', pair[0], pair[1]);
+        }
+      }
+    } catch (err) {
+      // ignore debug failures
     }
 
     try {
@@ -648,6 +773,23 @@ export default function App() {
       console.error('Submit error', err);
       alert('Submission failed: ' + (err.message || 'unknown error'));
     }
+  }
+
+  // Build pages from schema by splitting at questions with pageBreak === true
+  function buildPagesFromSchema(schema = []) {
+    const pages = [];
+    let current = [];
+    for (let i = 0; i < schema.length; i++) {
+      const q = schema[i];
+      current.push(q);
+      if (q.pageBreak) {
+        pages.push(current);
+        current = [];
+      }
+    }
+    if (current.length) pages.push(current);
+    if (pages.length === 0) pages.push([]); // ensure at least one page
+    return pages;
   }
 
   const currentSchema = publicView ? (forms[publicView.openingId]?.questions || []) : [];
@@ -742,24 +884,15 @@ export default function App() {
     return ((r.email || (r.answers && r.answers.email)) || "").trim();
   }
   function extractCandidateCollege(r) {
-    // flexible: check multiple common keys
+    // prefer top-level college if present, then fallback to answers
+    const top = (r.college || r.collegeName || r.college_name || "").trim();
+    if (top) return top;
     const candidates = [
-      r.college,
-      r.collegeName,
-      r.college_name,
-      r.college_institute,
-      r.college_institute_name,
-      r.answers && (r.answers.college || r.answers.collegeName || r.answers.college_name || r.answers.institute || r.answers.institution)
+      r.answers && (r.answers[CORE_QUESTIONS.college.id] || r.answers.college || r.answers.collegeName || r.answers.institute || r.answers.institution)
     ];
     for (const c of candidates) {
       if (typeof c === 'string' && c.trim()) return c.trim();
     }
-    // sometimes answers may be mapping of question ids -> value; try to find by checking against form coreFields
-    try {
-      const form = forms[r.openingId];
-      const collegeId = form?.meta?.coreFields?.collegeId;
-      if (collegeId && r.answers && r.answers[collegeId]) return (r.answers[collegeId] || "").trim();
-    } catch (e) {}
     return "";
   }
 
@@ -989,7 +1122,7 @@ export default function App() {
                               <div className="text-sm text-gray-600 mt-2">College: <span className="font-medium">{candidateCollege}</span></div>
                             ) : null}
 
-                            {/* Bottom-left row: Resume and response id - separated and allowed to wrap so they don't overlap */}
+                            {/* Bottom-left row: Resume and response id */}
                             <div className="mt-4 text-sm flex flex-wrap items-center gap-2">
                               {resp.resumeLink ? (
                                 <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline mr-3">Resume</a>
@@ -998,7 +1131,7 @@ export default function App() {
                             </div>
                           </div>
 
-                          {/* Right column: status selector (kept top-right) */}
+                          {/* Right column: status selector */}
                           <div className="w-[200px] flex flex-col items-end">
                             <div className="text-xs text-gray-500 mb-1">Status</div>
                             <select
@@ -1031,9 +1164,6 @@ export default function App() {
                 <h3 className="font-semibold mb-4">Filters</h3>
 
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div />
-                  </div>
                   <MultiSelectDropdown
                     label="Opening"
                     options={openingOptions}
@@ -1043,9 +1173,6 @@ export default function App() {
                     searchEnabled={true}
                   />
 
-                  <div className="mt-4 flex items-center justify-between">
-                    <div />
-                  </div>
                   <MultiSelectDropdown
                     label="Location"
                     options={locationOptions}
@@ -1055,9 +1182,6 @@ export default function App() {
                     searchEnabled={true}
                   />
 
-                  <div className="mt-4 flex items-center justify-between">
-                    <div />
-                  </div>
                   <MultiSelectDropdown
                     label="Department"
                     options={departmentOptions}
@@ -1067,9 +1191,6 @@ export default function App() {
                     searchEnabled={true}
                   />
 
-                  <div className="mt-4 flex items-center justify-between">
-                    <div />
-                  </div>
                   <MultiSelectDropdown
                     label="Source"
                     options={sourceOptions}
@@ -1079,10 +1200,6 @@ export default function App() {
                     searchEnabled={true}
                   />
 
-                  <div className="mt-4 flex items-center justify-between">
-                    <div />
-                  </div>
-                  {/* Important: Status dropdown should open upwards (prevent page scrolling) */}
                   <MultiSelectDropdown
                     label="Status"
                     options={statusOptions}
@@ -1090,7 +1207,6 @@ export default function App() {
                     onChange={setFilterStatus}
                     placeholder="All Status"
                     searchEnabled={false}
-                    openUp={true}
                   />
                 </div>
               </aside>
@@ -1204,100 +1320,180 @@ export default function App() {
       {/* FORM EDITOR MODAL (per opening) */}
       {showFormModal && formModalOpeningId && (() => {
         const op = openings.find(o => o.id === formModalOpeningId) || { id: formModalOpeningId, title: 'Opening' };
-        const formObj = forms[formModalOpeningId] || ensureCoreFieldsInForm({ questions: templateQuestions.slice(0,5).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } });
+        const formObj = forms[formModalOpeningId] || ensureCoreFieldsInForm({ questions: templateQuestions.map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } });
+
+        // header height (used for sticky offsets). Match with classes below if you change sizes.
+        const headerHeight = 74; // px
+
         return (
-          <div key={"formmodal_" + formModalOpeningId} className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-6 w-[920px] max-h-[90vh] overflow-auto shadow-xl">
-              <div className="flex items-start justify-between mb-4">
-                <div>
-                  <h3 className="text-lg font-semibold mb-1">Form Editor — {op.title}</h3>
-                  <div className="text-xs text-gray-500">Edit questions, save, publish, or share links. Core fields are mandatory and cannot be removed.</div>
-                </div>
-                <div className="flex gap-2">
-                  <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
-                  <button onClick={() => handleSaveForm(op.id)} className="px-3 py-1 border rounded">Save</button>
-                  <button onClick={() => handlePublishForm(op.id)} className="px-3 py-1 bg-green-600 text-white rounded">Publish</button>
-                  <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-1 border rounded text-red-600">Delete Saved Form</button>
-                  <button onClick={() => closeFormModal()} className="px-3 py-1 border rounded">Close</button>
+          <div key={"formmodal_" + formModalOpeningId} className="fixed inset-0 bg-black/40 flex items-start justify-center z-50 pt-6">
+            <div className="bg-white rounded-lg shadow-xl w-[920px] max-h-[86vh] overflow-hidden">
+              {/* Sticky Header - removed border line, subtle shadow */}
+              <div className="w-full sticky top-0 z-30 bg-white" style={{ height: headerHeight, boxShadow: '0 1px 0 rgba(0,0,0,0.04)' }}>
+                <div className="flex items-center justify-between p-4">
+                  <div>
+                    <h3 className="text-lg font-semibold mb-1">Form Editor — {op.title}</h3>
+                    <div className="text-xs text-gray-500">Edit questions, save, publish, or share links.</div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">+Add</button>
+                    <button onClick={() => handleSaveForm(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">Save</button>
+                    <button onClick={() => handlePublishForm(op.id)} className="px-3 py-2 bg-green-600 text-white rounded">Publish</button>
+                    <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-2 border rounded text-red-600 bg-white hover:shadow">Delete</button>
+                    <button onClick={() => closeFormModal()} className="px-3 py-2 border rounded bg-white hover:shadow">Close</button>
+                  </div>
                 </div>
               </div>
 
-              <div className="flex gap-6">
-                <div className="w-1/3 border-r pr-4">
-                  <h3 className="font-semibold mb-2">Question Bank</h3>
-                  {questionBank.length === 0 ? (
-                    <div className="text-xs text-gray-400">No questions in bank yet. Create one using "+ Custom Question" inside this editor.</div>
-                  ) : (
-                    questionBank.map(q => (
-                      <div key={q.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(op.id, q)}>
-                        <div className="font-medium">{q.label}</div>
-                        <div className="text-xs text-gray-500">{q.type}{q.required ? ' • required' : ''}</div>
+              {/* Content area: 3 columns, each with its own vertical scrolling */}
+              <div className="grid grid-cols-3 gap-6 p-4" style={{ height: `calc(86vh - ${headerHeight}px)` }}>
+                {/* Column 1: Question Bank */}
+                <div className="flex flex-col">
+                  <div className="sticky" style={{ top: headerHeight - 6, zIndex: 20, background: 'white' }}>
+                    <h3 className="font-semibold mb-2">Question Bank</h3>
+                  </div>
+                  <div className="overflow-auto pr-2" style={{ maxHeight: `calc(86vh - ${headerHeight + 48}px)` }}>
+                    <div className="space-y-3 pb-6">
+                      {questionBank.length === 0 ? (
+                        <div className="text-xs text-gray-400">No questions in bank yet. Create one using "+ Add".</div>
+                      ) : (
+                        questionBank.map(q => (
+                          <div key={q.id} className="p-3 border rounded bg-white hover:bg-gray-50 cursor-pointer" onClick={() => addQuestion(op.id, q)}>
+                            <div className="font-medium text-sm">{q.label}</div>
+                            <div className="text-xs text-gray-500 mt-1">{q.type}{q.required ? ' • required' : ''}</div>
+                          </div>
+                        ))
+                      )}
+
+                      <div className="mt-6">
+                        <div className="text-xs text-gray-500 mb-2">Or use template items</div>
+                        {templateQuestions.map(t => (
+                          <div key={t.id} className="p-3 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(op.id, t)}>{t.label}</div>
+                        ))}
                       </div>
-                    ))
-                  )}
-                  <div className="mt-4">
-                    <div className="text-xs text-gray-500">Or use template items</div>
-                    {templateQuestions.map(t => (
-                      <div key={t.id} className="p-2 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(op.id, t)}>{t.label}</div>
-                    ))}
+                    </div>
                   </div>
                 </div>
 
-                <div className="w-1/3">
-                  <h3 className="font-semibold mb-2">Form Questions</h3>
-                  <ul>
-                    {(formObj.questions || []).map((q, idx) => (
-                      <li key={q.id} draggable onDragStart={(e) => e.dataTransfer.setData('from', idx)} onDrop={(e) => { const from = parseInt(e.dataTransfer.getData('from')); onDrag(op.id, from, idx); }} onDragOver={(e) => e.preventDefault()} className="p-2 border mb-2 flex justify-between items-center">
-                        <div>
-                          <div className="font-medium">{q.label}{PROTECTED_IDS.has(q.id) ? ' (mandatory)' : ''}</div>
-                          <div className="text-xs text-gray-500">{q.type}{q.required ? ' • required' : ''}</div>
-                        </div>
-                        <div className="flex gap-2">
-                          {!PROTECTED_IDS.has(q.id) ? <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500">Remove</button> : <div className="text-xs text-gray-400">Protected</div>}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
+                {/* Column 2: Form Questions */}
+                <div className="flex flex-col">
+                  <div className="sticky" style={{ top: headerHeight - 6, zIndex: 20, background: 'white' }}>
+                    <h3 className="font-semibold mb-2">Form Questions</h3>
+                  </div>
+
+                  <div className="overflow-auto" style={{ maxHeight: `calc(86vh - ${headerHeight + 48}px)` }}>
+                    <ul className="space-y-3 pb-6">
+                      {(formObj.questions || []).map((q, idx) => (
+                        <li
+                          key={q.id}
+                          draggable
+                          onDragStart={(e) => e.dataTransfer.setData('from', idx)}
+                          onDrop={(e) => { const from = parseInt(e.dataTransfer.getData('from')); onDrag(op.id, from, idx); }}
+                          onDragOver={(e) => e.preventDefault()}
+                          className="p-3 border rounded bg-white flex flex-col gap-2"
+                        >
+                          {/* Top row: Label + (placeholder to keep layout consistent) */}
+                          <div className="flex items-start justify-between">
+                            <div className="text-sm font-medium leading-tight">
+                              {q.required ? <span className="text-red-500 mr-2">*</span> : null}
+                              <span className="whitespace-normal">{q.label}</span>
+                            </div>
+
+                            {/* removed type from top-right for consistency; keep empty placeholder to preserve layout */}
+                            <div />
+                          </div>
+
+                          {/* Middle row: optional validation summary */}
+                          <div className="text-xs text-gray-500">
+                            {q.validation && Object.keys(q.validation).length ? (
+                              <span className="ml-3 text-gray-400">• {Object.entries(q.validation).map(([k,v]) => `${k}=${v}`).join(', ')}</span>
+                            ) : null}
+                          </div>
+
+                          {/* Bottom row: left = protected lock + type (or just type for non-protected), right = controls */}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2 text-xs text-gray-500">
+                              {PROTECTED_IDS.has(q.id) ? (
+                                <>
+                                  <LockIcon className="w-4 h-4 text-gray-400" />
+                                  <div className="text-xs text-gray-400">{q.type}</div>
+                                </>
+                              ) : (
+                                // For non-protected, show the data type in the same spot (consistent with protected)
+                                <div className="text-xs text-gray-400">{q.type}</div>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-3">
+                              {!PROTECTED_IDS.has(q.id) ? (
+                                <button
+                                  onClick={() => removeQuestion(op.id, q.id)}
+                                  className="text-red-500 p-1 rounded hover:bg-red-50"
+                                  aria-label="Remove question"
+                                  title="Remove question"
+                                >
+                                  <Icon name="trash" className="w-5 h-5" />
+                                </button>
+                              ) : (
+                                <div className="text-xs text-gray-400"></div>
+                              )}
+                              <label className="flex items-center gap-2 text-xs text-gray-500">
+                                <input type="checkbox" checked={!!q.pageBreak} onChange={() => togglePageBreak(op.id, q.id)} />
+                                Page Break
+                              </label>
+                            </div>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 </div>
 
-                <div className="w-1/3">
-                  <h3 className="font-semibold mb-2">Preview & Share</h3>
+                {/* Column 3: Preview & Share */}
+                <div className="flex flex-col">
+                  <div className="sticky" style={{ top: headerHeight - 6, zIndex: 20, background: 'white' }}>
+                    <h3 className="font-semibold mb-2">Preview & Share</h3>
+                  </div>
 
-                  {formObj.meta?.isPublished ? (
-                    <div>
-                      <div className="text-sm text-gray-600 mb-2">Form published on {formObj.meta.publishedAt ? new Date(formObj.meta.publishedAt).toLocaleString() : ''}</div>
+                  <div className="overflow-auto pl-2" style={{ maxHeight: `calc(86vh - ${headerHeight + 48}px)` }}>
+                    {formObj.meta?.isPublished ? (
+                      <div className="pb-6">
+                        <div className="text-sm text-gray-600 mb-2">Form published on {formObj.meta.publishedAt ? new Date(formObj.meta.publishedAt).toLocaleString() : ''}</div>
 
-                      <div className="mb-2">
-                        <div className="text-xs font-semibold">Shareable links (by source)</div>
-                        <ul className="mt-2">
-                          {Object.entries(formObj.meta.shareLinks || {}).map(([src, link]) => (
-                            <li key={src} className="flex items-center justify-between mb-2">
-                              <div className="text-sm">{src}</div>
-                              <div className="flex items-center gap-2">
-                                <button onClick={() => handleCopy(link)} className="px-2 py-1 border rounded text-xs">Copy</button>
-                                <button onClick={() => openPublicFormByLink(op.id, src)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
+                        <div className="mb-2">
+                          <div className="text-xs font-semibold">Shareable links (by source)</div>
+                          <ul className="mt-2 space-y-2">
+                            {Object.entries(formObj.meta.shareLinks || {}).map(([src, link]) => (
+                              <li key={src} className="flex items-center justify-between">
+                                <div className="text-sm">{src}</div>
+                                <div className="flex items-center gap-2">
+                                  <button onClick={() => handleCopy(link)} className="px-2 py-1 border rounded text-xs">Copy</button>
+                                  <button onClick={() => openPublicFormByLink(op.id, src)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
 
-                      <div className="mt-3">
-                        <div className="text-xs font-semibold">Generic link</div>
-                        <div className="flex items-center gap-2 mt-2">
-                          <div className="text-sm break-all">{formObj.meta.genericLink}</div>
-                          <button onClick={() => handleCopy(formObj.meta.genericLink)} className="px-2 py-1 border rounded text-xs">Copy</button>
-                          <button onClick={() => openPublicFormByLink(op.id, undefined)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
+                        <div className="mt-3">
+                          <div className="text-xs font-semibold">Generic link</div>
+                          <div className="flex items-start gap-2 mt-2">
+                            <div className="text-sm break-all">{formObj.meta.genericLink}</div>
+                            <div className="flex flex-col gap-2">
+                              <button onClick={() => handleCopy(formObj.meta.genericLink)} className="px-2 py-1 border rounded text-xs">Copy</button>
+                              <button onClick={() => openPublicFormByLink(op.id, undefined)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
+                            </div>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ) : (
-                    <div className="text-sm text-gray-500">Form not yet published. Click Publish to generate shareable links per source.</div>
-                  )}
+                    ) : (
+                      <div className="text-sm text-gray-500 pb-6">Form not yet published. Click Publish to generate shareable links per source.</div>
+                    )}
 
-                  <div className="mt-4">
-                    <div className="text-xs font-semibold">Live response count</div>
-                    <div className="text-lg font-medium mt-1">{responses.filter(r => r.openingId === op.id).length}</div>
+                    <div className="mt-4">
+                      <div className="text-xs font-semibold">Live response count</div>
+                      <div className="text-lg font-medium mt-1">{responses.filter(r => r.openingId === op.id).length}</div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1306,7 +1502,7 @@ export default function App() {
         );
       })()}
 
-      {/* Custom Question Modal: ensure it sits above Form Editor modal by giving a very high inline zIndex */}
+      {/* Custom Question Modal */}
       {showCustomModal && (
         <div style={{ zIndex: 2000 }} className="fixed inset-0 bg-black/30 flex items-center justify-center">
           <div className="bg-white rounded-lg p-6 w-[560px] shadow-xl">
@@ -1316,9 +1512,10 @@ export default function App() {
                 <label className="text-xs text-gray-600">Question label</label>
                 <input value={customQ.label} onChange={(e) => setCustomQ({ ...customQ, label: e.target.value })} className="w-full mt-1 p-2 border rounded" required />
               </div>
+
               <div>
                 <label className="text-xs text-gray-600">Type</label>
-                <select value={customQ.type} onChange={(e) => setCustomQ({ ...customQ, type: e.target.value })} className="w-full mt-1 p-2 border rounded">
+                <select value={customQ.type} onChange={(e) => setCustomQ({ ...customQ, type: e.target.value, validation: {} })} className="w-full mt-1 p-2 border rounded">
                   {QUESTION_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
               </div>
@@ -1330,7 +1527,57 @@ export default function App() {
                 </div>
               )}
 
-              <div className="flex items-center gap-2">
+              {/* Validation panel (type-specific) */}
+              <div className="pt-2 border-t">
+                <div className="text-sm font-medium mb-2">Validation (optional)</div>
+
+                {(customQ.type === 'short_text' || customQ.type === 'long_text' || customQ.type === 'email' || customQ.type === 'url') && (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs text-gray-600">Min length</label>
+                        <input type="number" value={customQ.validation?.minLength || ""} onChange={(e) => setCustomQ(s => ({ ...s, validation: { ...s.validation, minLength: e.target.value } }))} className="w-full mt-1 p-2 border rounded" />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-600">Max length</label>
+                        <input type="number" value={customQ.validation?.maxLength || ""} onChange={(e) => setCustomQ(s => ({ ...s, validation: { ...s.validation, maxLength: e.target.value } }))} className="w-full mt-1 p-2 border rounded" />
+                      </div>
+                    </div>
+                    <div className="mt-3">
+                      <label className="text-xs text-gray-600">Pattern (regex)</label>
+                      <input value={customQ.validation?.pattern || ""} onChange={(e) => setCustomQ(s => ({ ...s, validation: { ...s.validation, pattern: e.target.value } }))} className="w-full mt-1 p-2 border rounded" placeholder="e.g. ^[A-Za-z ]+$" />
+                    </div>
+                  </>
+                )}
+
+                {customQ.type === 'number' && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs text-gray-600">Min value</label>
+                      <input type="number" value={customQ.validation?.min || ""} onChange={(e) => setCustomQ(s => ({ ...s, validation: { ...s.validation, min: e.target.value } }))} className="w-full mt-1 p-2 border rounded" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-600">Max value</label>
+                      <input type="number" value={customQ.validation?.max || ""} onChange={(e) => setCustomQ(s => ({ ...s, validation: { ...s.validation, max: e.target.value } }))} className="w-full mt-1 p-2 border rounded" />
+                    </div>
+                  </div>
+                )}
+
+                {customQ.type === 'file' && (
+                  <>
+                    <div>
+                      <label className="text-xs text-gray-600">Accepted file types (comma-separated, e.g. .pdf,.docx,image/png)</label>
+                      <input value={customQ.validation?.accept || ""} onChange={(e) => setCustomQ(s => ({ ...s, validation: { ...s.validation, accept: e.target.value } }))} className="w-full mt-1 p-2 border rounded" />
+                    </div>
+                    <div className="mt-3">
+                      <label className="text-xs text-gray-600">Max file size (bytes)</label>
+                      <input type="number" value={customQ.validation?.maxFileSize || ""} onChange={(e) => setCustomQ(s => ({ ...s, validation: { ...s.validation, maxFileSize: e.target.value } }))} className="w-full mt-1 p-2 border rounded" />
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 mt-3">
                 <input id="req" type="checkbox" checked={customQ.required} onChange={(e) => setCustomQ({ ...customQ, required: e.target.checked })} />
                 <label htmlFor="req" className="text-sm">Required</label>
               </div>
@@ -1344,136 +1591,43 @@ export default function App() {
         </div>
       )}
 
+      {/* Public apply modal */}
       {publicView && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-[760px] max-h-[90vh] overflow-auto shadow-xl">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h3 className="text-2xl font-semibold mb-1">Personal data</h3>
+                <div className="text-sm text-gray-500 mb-1">Fields with <span className="text-red-500">*</span> are mandatory.</div>
+              </div>
+              <div>
+                <button onClick={() => setPublicView(null)} className="px-3 py-1 border rounded">Close</button>
+              </div>
+            </div>
+
             {!publicView.submitted ? (
               <>
-                <h3 className="text-2xl font-semibold mb-1">Personal data</h3>
-                <div className="text-sm text-gray-500 mb-4">Fields with <span className="text-red-500">*</span> are mandatory.</div>
-
                 <form onSubmit={handlePublicSubmit} className="space-y-6">
+                  {/* build pages from schema */}
                   {(() => {
-                    const q = findQ("full name") || findQ("name");
-                    if (!q) return null;
+                    const schema = forms[publicView.openingId]?.questions || [];
+                    const pages = buildPagesFromSchema(schema);
+                    const pageIndex = (publicView.page || 0);
+                    const currentPage = pages[pageIndex] || [];
+                    // render all fields in currentPage
                     return (
-                      <div>
-                        <label className="block text-sm font-medium mb-2">{q.label}{q.required ? " *" : ""}</label>
-                        <input name={q.id} className="w-full border-2 border-gray-200 rounded-md p-3 text-base focus:outline-none focus:ring-4 focus:ring-blue-100 focus:border-blue-400" />
-                      </div>
+                      <PageRenderer
+                        pageQuestions={currentPage}
+                        allSchema={schema}
+                        pageIndex={pageIndex}
+                        totalPages={pages.length}
+                        onBack={() => setPublicView(prev => ({ ...prev, page: Math.max(0, (prev.page || 0) - 1) }))}
+                        onNext={() => setPublicView(prev => ({ ...prev, page: Math.min(((pages.length - 1) || 0), (prev.page || 0) + 1) }))}
+                        isLastPage={pageIndex === pages.length - 1}
+                      />
                     );
                   })()}
 
-                  {(() => {
-                    const q = findQ("profile") || findQ("picture") || findQ("photo") || findQ("profile picture");
-                    if (!q) return null;
-                    return (
-                      <div>
-                        <label className="block text-sm font-medium mb-2">Profile picture</label>
-                        <label className="block border-2 border-dashed border-gray-300 rounded-lg p-4 text-center cursor-pointer hover:border-blue-400 transition-colors">
-                          <div className="flex items-center gap-4 justify-center">
-                            <div className="w-14 h-14 rounded-full bg-gray-100 flex items-center justify-center text-xl">📷</div>
-                            <div className="text-left">
-                              <div className="text-sm">Drop your file here or <span className="text-blue-600 underline">Select a file</span></div>
-                              <div className="text-xs text-gray-400 mt-1">Only JPG, PNG are allowed — up to 2MB</div>
-                            </div>
-                          </div>
-                          <input type="file" name="resume" className="hidden" />
-                        </label>
-                      </div>
-                    );
-                  })()}
-
-                  <div className="grid grid-cols-2 gap-4">
-                    {(() => {
-                      const q1 = findQ("birth") || findQ("date");
-                      const q2 = findQ("country");
-                      return (
-                        <>
-                          <div>
-                            {q1 && (
-                              <>
-                                <label className="block text-sm font-medium mb-2">{q1.label}{q1.required ? " *" : ""}</label>
-                                <input type="date" name={q1.id} className="w-full border p-2 rounded-md" />
-                              </>
-                            )}
-                          </div>
-                          <div>
-                            {q2 && (
-                              <>
-                                <label className="block text-sm font-medium mb-2">{q2.label}{q2.required ? " *" : ""}</label>
-                                <select name={q2.id} className="w-full border p-2 rounded-md">
-                                  <option>India</option><option>United States</option><option>United Kingdom</option><option>Australia</option>
-                                </select>
-                              </>
-                            )}
-                          </div>
-                        </>
-                      );
-                    })()}
-                  </div>
-
-                  {(() => {
-                    const q = findQ("mother");
-                    if (!q) return null;
-                    return (
-                      <div>
-                        <label className="block text-sm font-medium mb-2">{q.label}{q.required ? " *" : ""}</label>
-                        <input name={q.id} className="w-full border p-2 rounded-md" />
-                      </div>
-                    );
-                  })()}
-
-                  <div className="grid grid-cols-2 gap-4">
-                    {(() => {
-                      const items = [
-                        { key: "gender", labelHint: "gender" },
-                        { key: "color", labelHint: "color" },
-                        { key: "marital", labelHint: "marital" },
-                        { key: "special", labelHint: "special needs" },
-                        { key: "state", labelHint: "state" },
-                        { key: "city", labelHint: "city" }
-                      ];
-                      return items.map(it => {
-                        const q = findQ(it.labelHint);
-                        return q ? (
-                          <div key={it.key}>
-                            <label className="block text-sm font-medium mb-2">{q.label}{q.required ? " *" : ""}</label>
-                            {q.type === "dropdown" || q.type === "radio" ? (
-                              <select name={q.id} className="w-full border p-2 rounded-md">{(q.options || []).map(opt => <option key={opt}>{opt}</option>)}</select>
-                            ) : (
-                              <input name={q.id} className="w-full border p-2 rounded-md" />
-                            )}
-                          </div>
-                        ) : null;
-                      });
-                    })()}
-                  </div>
-
-                  {currentSchema.filter(q => {
-                    const lower = (q.label || "").toLowerCase();
-                    return !["name","full name","profile","picture","photo","birth","date","country","mother","gender","color","race","marital","special needs","state","city"].some(k => lower.includes(k));
-                  }).map(q => (
-                    <div key={q.id}>
-                      <label className="block text-sm font-medium mb-2">{q.label}{q.required ? " *" : ""}</label>
-                      {q.type === "long_text" ? (
-                        <textarea name={q.id} className="w-full border p-2 rounded-md" />
-                      ) : q.type === "dropdown" || q.type === "radio" ? (
-                        <select name={q.id} className="w-full border p-2 rounded-md">{(q.options || []).map(opt => <option key={opt}>{opt}</option>)}</select>
-                      ) : q.type === "checkboxes" ? (
-                        (q.options || []).map(opt => <div key={opt}><label className="inline-flex items-center"><input name={q.id} value={opt} type="checkbox" className="mr-2" /> {opt}</label></div>)
-                      ) : q.type === "file" ? (
-                        <input name={q.id} type="file" />
-                      ) : (
-                        <input name={q.id} className="w-full border p-2 rounded-md" />
-                      )}
-                    </div>
-                  ))}
-
-                  <div className="flex items-center justify-between mt-4">
-                    <button type="button" onClick={() => setPublicView(null)} className="px-4 py-2 border rounded-md text-sm">← BACK</button>
-                    <button type="submit" className="px-6 py-2 bg-blue-600 text-white rounded-md text-sm">NEXT →</button>
-                  </div>
                 </form>
               </>
             ) : (
@@ -1487,5 +1641,61 @@ export default function App() {
         </div>
       )}
     </div>
+  );
+}
+
+/* -------------------------
+   PageRenderer component for public form pagination
+   - receives pageQuestions: array of questions for current page
+   - allSchema: entire schema (used for validation on submit)
+   - pageIndex, totalPages, onBack, onNext
+   - this renders inputs and the appropriate buttons (Back/Next/Submit Form)
+  ------------------------- */
+function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, totalPages = 1, onBack = () => {}, onNext = () => {}, isLastPage = true }) {
+  // We purposely don't manage component-level form state here -- the parent form submission
+  // gathers inputs by name; we must ensure each input's name equals question.id so handlePublicSubmit can read.
+  return (
+    <>
+      {pageQuestions.map(q => (
+        <div key={q.id}>
+          <label className="block text-sm font-medium mb-2">{q.label}{q.required ? " *" : ""}</label>
+
+          {q.type === "long_text" ? (
+            <textarea name={q.id} required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
+          ) : q.type === "dropdown" || q.type === "radio" ? (
+            <select name={q.id} required={q.required} className="w-full border p-2 rounded-md">{(q.options || []).map(opt => <option key={opt}>{opt}</option>)}</select>
+          ) : q.type === "checkboxes" ? (
+            (q.options || []).map(opt => <div key={opt}><label className="inline-flex items-center"><input name={q.id} value={opt} type="checkbox" className="mr-2" /> {opt}</label></div>)
+          ) : q.type === "file" ? (
+            <input name={q.id} type="file" accept={q.validation?.accept || undefined} />
+          ) : q.type === "number" ? (
+            <input name={q.id} type="number" required={q.required} min={q.validation?.min} max={q.validation?.max} className="w-full border p-2 rounded-md" />
+          ) : q.type === "email" ? (
+            <input name={q.id} type="email" required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
+          ) : q.id === CORE_QUESTIONS.phone.id || q.label.toLowerCase().includes("phone") ? (
+            // stronger input constraints for phone field in UI (also validated server-side in handlePublicSubmit)
+            <input name={q.id} type="tel" required={q.required} pattern="^\d{7,15}$" inputMode="numeric" title="Enter 7 to 15 digits" className="w-full border p-2 rounded-md" />
+          ) : (
+            <input name={q.id} required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
+          )}
+        </div>
+      ))}
+
+      <div className="flex items-center justify-between mt-4">
+        <div>
+          {pageIndex > 0 ? <button type="button" onClick={onBack} className="px-4 py-2 border rounded-md text-sm">← BACK</button> : <div />}
+        </div>
+
+        <div>
+          {totalPages <= 1 ? (
+            <button type="submit" className="px-6 py-2 bg-blue-600 text-white rounded-md text-sm">Submit Form</button>
+          ) : isLastPage ? (
+            <button type="submit" className="px-6 py-2 bg-blue-600 text-white rounded-md text-sm">Submit Form</button>
+          ) : (
+            <button type="button" onClick={onNext} className="px-6 py-2 bg-blue-600 text-white rounded-md text-sm">NEXT →</button>
+          )}
+        </div>
+      </div>
+    </>
   );
 }
