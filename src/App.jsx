@@ -697,23 +697,17 @@ export default function App() {
     // if all validations passed — build FormData and submit
     const fd = new FormData();
 
-    // Important: Avoid sending duplicates for core fields.
-    // We'll skip appending the core question ids when building the general answers part,
-    // and append canonical top-level core fields exactly once below.
-    const coreMeta = formObj.meta?.coreFields || {};
-    const coreIdsSet = new Set([
-      coreMeta.fullNameId || CORE_QUESTIONS.fullName.id,
-      coreMeta.emailId || CORE_QUESTIONS.email.id,
-      coreMeta.phoneId || CORE_QUESTIONS.phone.id,
-      coreMeta.resumeId || CORE_QUESTIONS.resume.id,
-      coreMeta.collegeId || CORE_QUESTIONS.college.id
-    ]);
+    // We'll avoid sending core question IDs to prevent duplicates on the server.
+    // We'll instead append canonical top-level fields (fullName, email, phone, college)
+    // and ensure the resume file is appended under 'resume' (and compatibility names).
+    const core = formObj.meta?.coreFields || {};
+    const coreIds = new Set([core.fullNameId, core.emailId, core.phoneId, core.resumeId, core.collegeId]);
 
-    // Append non-core answers and files (skip the core question ids)
+    // Add non-core answers and files
     for (const [k, v] of Object.entries(values)) {
       if (v === null || v === undefined) continue;
-      if (coreIdsSet.has(k)) {
-        // skip core questions here — we'll append canonical core fields below to avoid duplicates
+      // skip appending core question ids entirely — they'll be sent as top-level fields instead
+      if (coreIds.has(k)) {
         continue;
       }
 
@@ -726,26 +720,27 @@ export default function App() {
       }
     }
 
-    // Append resume file (if present) under canonical key(s).
-    // Some browsers may not allow appending same File reference multiple times in some environments,
-    // but we try in a try/catch to be robust.
+    // Append resume file (if present) under canonical keys — we skipped core ids above
     try {
-      const resumeFile = values[coreMeta.resumeId] || values[CORE_QUESTIONS.resume.id];
+      const resumeFile = values[core.resumeId] || values[CORE_QUESTIONS.resume.id];
       if (resumeFile instanceof File) {
+        // primary key
         fd.append('resume', resumeFile, resumeFile.name);
-        try { fd.append('resumeFile', resumeFile, resumeFile.name); } catch (e) { /* ignore double-append errors */ }
-        try { fd.append('cv', resumeFile, resumeFile.name); } catch (e) { /* ignore */ }
+        // additional names for compatibility (server-side may expect any of these)
+        try { fd.append('resumeFile', resumeFile, resumeFile.name); } catch (err) {}
+        try { fd.append('cv', resumeFile, resumeFile.name); } catch (err) {}
       }
     } catch (err) {
-      // not critical
+      // swallow
     }
 
-    // Append canonical top-level text fields exactly once
+    // Also append top-level core text fields so backend receives them as first-class fields
+    // (so they can be saved into the top-level response properties and Google Sheet columns)
     try {
-      const fullnameVal = values[coreMeta.fullNameId] || values[CORE_QUESTIONS.fullName.id] || "";
-      const emailVal = values[coreMeta.emailId] || values[CORE_QUESTIONS.email.id] || "";
-      const phoneVal = values[coreMeta.phoneId] || values[CORE_QUESTIONS.phone.id] || "";
-      const collegeVal = values[coreMeta.collegeId] || values[CORE_QUESTIONS.college.id] || "";
+      const fullnameVal = values[core.fullNameId] || values[CORE_QUESTIONS.fullName.id] || "";
+      const emailVal = values[core.emailId] || values[CORE_QUESTIONS.email.id] || "";
+      const phoneVal = values[core.phoneId] || values[CORE_QUESTIONS.phone.id] || "";
+      const collegeVal = values[core.collegeId] || values[CORE_QUESTIONS.college.id] || "";
 
       if (fullnameVal) fd.append('fullName', fullnameVal);
       if (emailVal) fd.append('email', emailVal);
@@ -1346,7 +1341,7 @@ export default function App() {
           <div key={"formmodal_" + formModalOpeningId} className="fixed inset-0 bg-black/40 flex items-start justify-center z-50 pt-6">
             <div className="bg-white rounded-lg shadow-xl w-[920px] max-h-[86vh] overflow-hidden">
               {/* Sticky Header - removed border line, subtle shadow */}
-              <div className="w-full sticky top-0 z-30 bg-white" style={{ height: headerHeight, boxShadow: '0 1px 0 rgba(0,0,0,0.04)' }}">
+              <div className="w-full sticky top-0 z-30 bg-white" style={{ height: headerHeight, boxShadow: '0 1px 0 rgba(0,0,0,0.04)' }}>
                 <div className="flex items-center justify-between p-4">
                   <div>
                     <h3 className="text-lg font-semibold mb-1">Form Editor — {op.title}</h3>
