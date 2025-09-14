@@ -1,4 +1,3 @@
-// src/App.jsx
 import React, { useState, useEffect, useMemo } from "react";
 import { v4 as uuidv4 } from "uuid";
 
@@ -169,6 +168,9 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
 
+  // NEW: state for values entered in public form (persist across pages)
+  const [formValues, setFormValues] = useState({});
+
   // Custom question modal + form editor states
   const [showCustomModal, setShowCustomModal] = useState(false);
   const [customOpeningId, setCustomOpeningId] = useState(null);
@@ -194,6 +196,11 @@ export default function App() {
   const [filterDepartments, setFilterDepartments] = useState([]);
   const [filterSources, setFilterSources] = useState([]);
   const [filterStatus, setFilterStatus] = useState([]);
+
+  // Jobs tab search & filters (new)
+  const [jobsSearch, setJobsSearch] = useState("");
+  const [jobsFilterLocations, setJobsFilterLocations] = useState([]);
+  const [jobsFilterDepartments, setJobsFilterDepartments] = useState([]);
 
   // Search query for candidate list (search across name, email, college, opening title, source, response id)
   const [searchQuery, setSearchQuery] = useState("");
@@ -260,28 +267,39 @@ export default function App() {
 
   /* -------------------------
      Helper: ensure core fields exist in a form object
+     - also dedupe non-core questions that look like core (particularly college) to avoid duplicates
   ------------------------- */
+  function looksLikeCollegeLabel(label = "") {
+    if (!label) return false;
+    const s = label.toLowerCase();
+    return s.includes("college") || s.includes("organisation") || s.includes("organization") || s.includes("institute");
+  }
+
   function ensureCoreFieldsInForm(formObj) {
-    // Avoid mutating the original object unexpectedly
-    formObj = { ...(formObj || {}) };
-    formObj.questions = (formObj.questions || []).map(q => ({ ...q }));
+    formObj = formObj || { questions: [], meta: {} };
+    // Deduplicate: remove non-core questions that look like core college label to avoid duplicates
+    formObj.questions = (formObj.questions || []).filter(q => {
+      if (!q) return false;
+      // If this question is the protected college id, keep it.
+      if (q.id === CORE_QUESTIONS.college.id) return true;
+      // If its label strongly looks like college/organization, drop it (we'll use protected one).
+      if (looksLikeCollegeLabel(q.label)) return false;
+      return true;
+    });
 
     const existingIds = new Set((formObj.questions || []).map(q => q.id));
     // always inject core fields at start in this defined order
     const coreOrder = [CORE_QUESTIONS.fullName, CORE_QUESTIONS.email, CORE_QUESTIONS.phone, CORE_QUESTIONS.resume, CORE_QUESTIONS.college];
-    // Only add the ones missing
     const missing = coreOrder.filter(cq => !existingIds.has(cq.id)).map(cq => ({ ...cq }));
     if (missing.length) {
       formObj.questions = [...missing, ...(formObj.questions || [])];
     }
-
     formObj.questions = (formObj.questions || []).map(q => {
       if (PROTECTED_IDS.has(q.id)) {
         return { ...q, required: true, validation: q.validation || {}, pageBreak: q.pageBreak || false };
       }
       return { ...q, validation: q.validation || {}, pageBreak: q.pageBreak || false };
     });
-
     formObj.meta = formObj.meta || {};
     formObj.meta.coreFields = formObj.meta.coreFields || {
       fullNameId: CORE_QUESTIONS.fullName.id,
@@ -318,7 +336,16 @@ export default function App() {
       const allForms = await apiFetch('/api/forms');
       const map = {};
       (allForms || []).forEach(f => {
-        const obj = { questions: (f.data && f.data.questions) || [], meta: (f.data && f.data.meta) || null, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at, openingId: f.openingId };
+        // normalize/cleanup any college-like duplicates that may have been saved with custom ids/labels
+        let questions = (f.data && f.data.questions) || [];
+        // remove any non-core college-like entries
+        questions = questions.filter(q => {
+          if (!q) return false;
+          if (q.id === CORE_QUESTIONS.college.id) return true;
+          if (looksLikeCollegeLabel(q.label)) return false;
+          return true;
+        });
+        const obj = { questions, meta: (f.data && f.data.meta) || null, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at, openingId: f.openingId };
         map[f.openingId] = ensureCoreFieldsInForm(obj);
       });
       (openings || []).forEach(op => {
@@ -414,6 +441,8 @@ export default function App() {
       const exists = (existing.questions || []).some(x => x.id === question.id);
       if (exists) return f;
       if (PROTECTED_IDS.has(question.id)) return { ...f };
+      // avoid adding a non-core question that looks like college
+      if (looksLikeCollegeLabel(question.label)) return f;
       const newQuestions = [...(existing.questions || []), question];
       return { ...f, [openingId]: { ...existing, questions: newQuestions } };
     });
@@ -557,7 +586,9 @@ export default function App() {
     navigator.clipboard.writeText(text).then(() => alert("Copied to clipboard"));
   }
 
+  // NEW: reset formValues when opening a public form so previous data is not reused
   function openPublicFormByLink(openingId, source) {
+    setFormValues({}); // << reset stored values for a clean start
     // initialize page index to 0
     setPublicView({ openingId, source, submitted: false, page: 0 });
   }
@@ -607,10 +638,10 @@ export default function App() {
 
   /* -------------------------
      Public form submission with validation and top-level core fields
+     (UPDATED to use formValues instead of reading raw form DOM elements)
   ------------------------- */
   async function handlePublicSubmit(e) {
     e.preventDefault();
-    const formEl = e.target;
     const openingId = publicView.openingId;
     const source = publicView.source || 'unknown';
 
@@ -620,38 +651,25 @@ export default function App() {
       alert('Form schema not found.');
       return;
     }
-    const qMap = {};
-    (formObj.questions || []).forEach(q => { qMap[q.id] = q; });
 
-    // collect values and validate
-    const values = {};
-    for (let i = 0; i < formEl.elements.length; i++) {
-      const el = formEl.elements[i];
-      if (!el.name) continue;
-      if (el.type === 'file') {
-        values[el.name] = el.files && el.files[0] ? el.files[0] : null;
-      } else if (el.type === 'checkbox') {
-        if (!values[el.name]) values[el.name] = [];
-        if (el.checked) values[el.name].push(el.value);
-      } else {
-        values[el.name] = el.value;
-      }
-    }
+    // use the persistent values stored in state
+    const values = { ...(formValues || {}) };
 
     // validate each field mapped in schema
     for (const q of (formObj.questions || [])) {
       const name = q.id;
       const val = values[name];
-      // required
+      // required checks
       if (q.required) {
         if (q.type === 'file') {
           if (!val) { alert(`${q.label} is required.`); return; }
         } else if (q.type === 'checkboxes') {
           if (!val || (Array.isArray(val) && val.length === 0)) { alert(`${q.label} is required.`); return; }
-        } else if (!val || String(val).trim() === "") {
+        } else if (val === undefined || val === null || String(val).trim() === "") {
           alert(`${q.label} is required.`); return;
         }
       }
+
       const v = q.validation || {};
       if (q.type === 'short_text' || q.type === 'long_text' || q.type === 'email' || q.type === 'url') {
         const s = (val || "").toString();
@@ -670,11 +688,13 @@ export default function App() {
           if (s && !emailRe.test(s)) { alert(`${q.label} must be a valid email address.`); return; }
         }
       }
+
       if (q.id === CORE_QUESTIONS.phone.id || q.label.toLowerCase().includes('phone')) {
         const s = (val || "").toString().replace(/\D/g, '');
         if (q.required && s.length === 0) { alert(`${q.label} is required.`); return; }
         if (s && (s.length < 7 || s.length > 15)) { alert(`${q.label} must be between 7 and 15 digits.`); return; }
       }
+
       if (q.type === 'number') {
         if (val !== undefined && val !== null && String(val).trim() !== "") {
           const num = Number(val);
@@ -683,6 +703,7 @@ export default function App() {
           if (v.max !== undefined && v.max !== "" && num > Number(v.max)) { alert(`${q.label} must be <= ${v.max}`); return; }
         }
       }
+
       if (q.type === 'file' && val) {
         const f = val;
         if (v.accept && v.accept.length) {
@@ -703,28 +724,23 @@ export default function App() {
     // if all validations passed — build FormData and submit
     const fd = new FormData();
 
-    // Important: Avoid sending duplicates for core fields.
-    // We'll skip appending the core question ids when building the general answers part,
-    // and append canonical top-level core fields exactly once below.
-    const coreMeta = formObj.meta?.coreFields || {};
-    const coreIdsSet = new Set([
-      coreMeta.fullNameId || CORE_QUESTIONS.fullName.id,
-      coreMeta.emailId || CORE_QUESTIONS.email.id,
-      coreMeta.phoneId || CORE_QUESTIONS.phone.id,
-      coreMeta.resumeId || CORE_QUESTIONS.resume.id,
-      coreMeta.collegeId || CORE_QUESTIONS.college.id
-    ]);
-
-    // Append non-core answers and files (skip the core question ids)
+    // Add answers and files
     for (const [k, v] of Object.entries(values)) {
       if (v === null || v === undefined) continue;
-      if (coreIdsSet.has(k)) {
-        // skip core questions here — we'll append canonical core fields below to avoid duplicates
-        continue;
-      }
-
       if (v instanceof File) {
+        // append under its question id
         fd.append(k, v, v.name);
+        // ALSO append under a stable key the server might expect (prevent Multer Unexpected field)
+        const lk = (k || "").toLowerCase();
+        if (k === CORE_QUESTIONS.resume.id || lk.includes('resume') || lk.includes('cv') || lk.includes('upload_resume')) {
+          try {
+            fd.append('resume', v, v.name);
+            fd.append('resumeFile', v, v.name);
+            fd.append('cv', v, v.name);
+          } catch (err) {
+            // ignore potential browser double-append issues
+          }
+        }
       } else if (Array.isArray(v)) {
         v.forEach(item => fd.append(k, item));
       } else {
@@ -732,24 +748,13 @@ export default function App() {
       }
     }
 
-    // Append resume file (if present) under canonical key(s).
+    // Also append top-level core fields so backend receives them as first-class fields
     try {
-      const resumeFile = values[coreMeta.resumeId] || values[CORE_QUESTIONS.resume.id];
-      if (resumeFile instanceof File) {
-        fd.append('resume', resumeFile, resumeFile.name);
-        try { fd.append('resumeFile', resumeFile, resumeFile.name); } catch (e) { /* ignore double-append errors */ }
-        try { fd.append('cv', resumeFile, resumeFile.name); } catch (e) { /* ignore */ }
-      }
-    } catch (err) {
-      // not critical
-    }
-
-    // Append canonical top-level text fields exactly once
-    try {
-      const fullnameVal = values[coreMeta.fullNameId] || values[CORE_QUESTIONS.fullName.id] || "";
-      const emailVal = values[coreMeta.emailId] || values[CORE_QUESTIONS.email.id] || "";
-      const phoneVal = values[coreMeta.phoneId] || values[CORE_QUESTIONS.phone.id] || "";
-      const collegeVal = values[coreMeta.collegeId] || values[CORE_QUESTIONS.college.id] || "";
+      const core = formObj.meta?.coreFields || {};
+      const fullnameVal = values[core.fullNameId] || values[CORE_QUESTIONS.fullName.id] || "";
+      const emailVal = values[core.emailId] || values[CORE_QUESTIONS.email.id] || "";
+      const phoneVal = values[core.phoneId] || values[CORE_QUESTIONS.phone.id] || "";
+      const collegeVal = values[core.collegeId] || values[CORE_QUESTIONS.college.id] || "";
 
       if (fullnameVal) fd.append('fullName', fullnameVal);
       if (emailVal) fd.append('email', emailVal);
@@ -953,6 +958,42 @@ export default function App() {
   }, [responses, openings, filterOpenings, filterLocations, filterDepartments, filterSources, filterStatus, searchQuery]);
 
   /* -------------------------
+     Jobs tab filtered openings
+  ------------------------- */
+  const filteredOpeningsForJobs = useMemo(() => {
+    const q = (jobsSearch || "").toLowerCase().trim();
+    return openings.filter(op => {
+      if (jobsFilterLocations.length > 0 && !jobsFilterLocations.includes(op.location || "")) return false;
+      if (jobsFilterDepartments.length > 0 && !jobsFilterDepartments.includes(op.department || "")) return false;
+      if (q) {
+        const title = (op.title || "").toLowerCase();
+        const dept = (op.department || "").toLowerCase();
+        const loc = (op.location || "").toLowerCase();
+        if (!(title.includes(q) || dept.includes(q) || loc.includes(q))) return false;
+      }
+      return true;
+    });
+  }, [openings, jobsSearch, jobsFilterLocations, jobsFilterDepartments]);
+
+  /* -------------------------
+     Clear all helper functions for filters
+  ------------------------- */
+  function clearAllJobsFilters() {
+    setJobsSearch("");
+    setJobsFilterLocations([]);
+    setJobsFilterDepartments([]);
+  }
+
+  function clearAllHiringFilters() {
+    setSearchQuery("");
+    setFilterOpenings([]);
+    setFilterLocations([]);
+    setFilterDepartments([]);
+    setFilterSources([]);
+    setFilterStatus([]);
+  }
+
+  /* -------------------------
      Render gating
   ------------------------- */
   if (!authChecked) {
@@ -973,12 +1014,12 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800 flex">
       {/* Sidebar */}
-      <aside className="w-64 bg-gray-900 text-gray-100 p-6 flex flex-col justify-between">
+      <aside className="w-64 bg-gray-900 text-gray-100 p-6 flex flex-col justify-between h-screen sticky top-0">
         <div>
           <div className="flex items-center gap-3 mb-6">
-            <div className="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center font-bold">SV</div>
+            <div className="w-24 h-16 rounded-full bg-blue-600 flex items-center justify-center font-bold">Hi!</div>
             <div>
-              <div className="text-sm font-semibold">StampMyVisa</div>
+              <div className="text-sm font-semibold">{user.name}</div>
               {user ? (
                 <>
                   <div className="text-xs opacity-80">{user.email} <span className="text-xs text-blue-300">({user.role})</span></div>
@@ -1003,71 +1044,96 @@ export default function App() {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 p-8 overflow-auto">
+      <main className="flex-1 p-8 overflow-hidden min-h-0">
         {activeTab === "overview" && (
           <>
             <h1 className="text-2xl font-semibold mb-4">Overview</h1>
-            <div className="grid grid-cols-3 gap-6 mb-6">
-              <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="font-semibold">Openings</h2>
-                  <div className="text-sm opacity-60">{openings.length} openings</div>
-                </div>
-                <div className="space-y-4">
-                  {openings.map(op => (
-                    <div key={op.id} className="p-4 rounded-lg border border-gray-100">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <div className="font-semibold">{op.title}</div>
-                          <div className="text-sm text-gray-500">{op.department} • {op.location}</div>
-                          <div className="text-xs text-gray-400 mt-1">Created on {op.createdAt}</div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-xs text-gray-500">Responses: {responses.filter(r => r.openingId === op.id).length}</div>
-                          <div className="mt-2 flex gap-2">
-                            <button onClick={() => handleEditOpeningOpen(op)} className="px-2 py-1 border rounded text-sm">Edit</button>
-                            <button onClick={() => openFormModal(op.id)} className="px-2 py-1 bg-blue-600 text-white rounded text-sm">Open Form Editor</button>
+            <div style={{ maxHeight: 'calc(100vh - 7.5rem)', overflow: 'auto' }} className="pb-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                {/* Openings card */}
+                <div className="bg-white rounded-lg p-6 shadow-sm flex flex-col" style={{ maxHeight: 420 }}>
+                  <div className="flex justify-between items-center mb-4">
+                    <h2 className="font-semibold">Openings</h2>
+                    <div className="text-sm opacity-60">{openings.length} openings</div>
+                  </div>
+                  <div className="overflow-auto" style={{ flex: 1, minHeight: 0 }}>
+                    <div className="space-y-4">
+                      {openings.map(op => (
+                        <div key={op.id} className="p-4 rounded-lg border border-gray-100">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <div className="font-semibold">{op.title}</div>
+                              <div className="text-sm text-gray-500">{op.department} • {op.location}</div>
+                              <div className="text-xs text-gray-400 mt-1">Created on {op.createdAt}</div>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-xs text-gray-500">Responses: {responses.filter(r => r.openingId === op.id).length}</div>
+                              <div className="mt-2 flex gap-2">
+                                <button onClick={() => handleEditOpeningOpen(op)} className="px-2 py-1 border rounded text-sm">Edit</button>
+                                <button onClick={() => openFormModal(op.id)} className="px-2 py-1 bg-blue-600 text-white rounded text-sm">Open Form Editor</button>
+                              </div>
+                            </div>
                           </div>
                         </div>
-                      </div>
+                      ))}
                     </div>
-                  ))}
+                  </div>
                 </div>
-              </div>
 
-              <aside className="bg-white rounded-lg p-6 shadow-sm">
-                <h3 className="font-semibold mb-3">Quick Stats</h3>
-                <div className="text-sm text-gray-500">Candidates: {responses.length}</div>
-                <div className="text-sm text-gray-500">Active Jobs: {openings.length}</div>
-                <div className="text-sm text-gray-500">Talent Pools: 10</div>
-                <div className="text-sm text-gray-500">Members: 3</div>
-              </aside>
+                {/* Quick stats */}
+                <aside className="bg-white rounded-lg p-6 shadow-sm" style={{ maxHeight: 420, overflow: 'auto' }}>
+                  <h3 className="font-semibold mb-3">Quick Stats</h3>
+                  <div className="text-sm text-gray-500">Candidates: {responses.length}</div>
+                  <div className="text-sm text-gray-500">Active Jobs: {openings.length}</div>
+                  <div className="text-sm text-gray-500">Talent Pools: 10</div>
+                  <div className="text-sm text-gray-500">Members: 3</div>
+                </aside>
+
+                {/* Recent Responses - updated: show total count and Candidate instead of Response ID */}
+                <div className="bg-white rounded-lg p-6 shadow-sm flex flex-col" style={{ maxHeight: 420 }}>
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="font-semibold">Recent Responses</h3>
+                    <div className="text-sm opacity-60">{responses.length} responses</div>
+                  </div>
+
+                  <div className="overflow-auto" style={{ flex: 1, minHeight: 0 }}>
+                    <table className="w-full text-sm">
+                      <thead className="text-left text-gray-500 text-xs">
+                        <tr>
+                          <th>Candidate</th>
+                          <th>Opening</th>
+                          <th>Source</th>
+                          <th>Date</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {responses.map(r => {
+                          const name = extractCandidateName(r) || r.id;
+                          return (
+                            <tr key={r.id}>
+                              <td className="py-2">{name}</td>
+                              <td>{openings.find(o => o.id === r.openingId)?.title || '—'}</td>
+                              <td>{r.source}</td>
+                              <td>{r.createdAt ? new Date(r.createdAt).toLocaleString() : ''}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Onboarding */}
+                <aside className="bg-white rounded-lg p-6 shadow-sm" style={{ maxHeight: 420, overflow: 'auto' }}>
+                  <h3 className="font-semibold mb-3">Onboarding Status</h3>
+                  <ul className="space-y-3 text-sm text-gray-600">
+                    <li>Brooklyn Simmons — Reviewing Contract</li>
+                    <li>Darlene Robertson — Reviewing Contract</li>
+                    <li>Savannah Nguyen — Reviewing Contract</li>
+                  </ul>
+                </aside>
+              </div>
             </div>
-
-            <section className="grid grid-cols-3 gap-6">
-              <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
-                <h3 className="font-semibold mb-4">Recent Responses</h3>
-                <table className="w-full text-sm">
-                  <thead className="text-left text-gray-500 text-xs">
-                    <tr><th>Response ID</th><th>Opening</th><th>Source</th><th>Date</th></tr>
-                  </thead>
-                  <tbody className="divide-y">
-                    {responses.map(r => (
-                      <tr key={r.id}><td>{r.id}</td><td>{openings.find(o => o.id === r.openingId)?.title || '—'}</td><td>{r.source}</td><td>{new Date(r.createdAt).toLocaleString()}</td></tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <aside className="bg-white rounded-lg p-6 shadow-sm">
-                <h3 className="font-semibold mb-3">Onboarding Status</h3>
-                <ul className="space-y-3 text-sm text-gray-600">
-                  <li>Brooklyn Simmons — Reviewing Contract</li>
-                  <li>Darlene Robertson — Reviewing Contract</li>
-                  <li>Savannah Nguyen — Reviewing Contract</li>
-                </ul>
-              </aside>
-            </section>
           </>
         )}
 
@@ -1078,20 +1144,69 @@ export default function App() {
               <button onClick={openCreate} className="bg-blue-600 text-white px-4 py-2 rounded inline-flex items-center gap-2">{<Icon name="plus" />} New Opening</button>
             </header>
 
-            <div className="space-y-4">
-              {openings.map(op => (
-                <div key={op.id} className="p-4 rounded-lg border flex justify-between items-center">
-                  <div>
-                    <div className="font-semibold">{op.title}</div>
-                    <div className="text-sm text-gray-500">{op.department} • {op.location}</div>
+            <div className="grid grid-cols-3 gap-6 h-[calc(100vh-6rem)] min-h-0">
+              <div className="col-span-2 bg-white rounded-lg shadow-sm flex flex-col min-h-0">
+                <div className="p-6 border-b">
+                  <div className="mb-4">
+                    <input
+                      value={jobsSearch}
+                      onChange={(e) => setJobsSearch(e.target.value)}
+                      placeholder="Search jobs by title, location, department..."
+                      className="w-full border p-3 rounded"
+                    />
+                    <div className="text-xs text-gray-400 mt-2">Search filters job title, department or location.</div>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <button onClick={() => handleEditOpeningOpen(op)} className="px-3 py-1 border rounded">Edit</button>
-                    <button onClick={() => openFormModal(op.id)} className="px-3 py-1 bg-blue-600 text-white rounded">Form Editor</button>
-                    <button onClick={() => handleDeleteOpening(op.id)} className="text-red-600 flex items-center gap-1"><Icon name="trash" /> Delete</button>
+                  <h2 className="font-semibold mb-0">Openings</h2>
+                </div>
+
+                <div className="p-6 overflow-auto" style={{ flex: 1, minHeight: 0 }}>
+                  <div className="space-y-4">
+                    {filteredOpeningsForJobs.length === 0 && <div className="text-sm text-gray-500">No openings match the selected filters or search.</div>}
+
+                    {filteredOpeningsForJobs.map(op => (
+                      <div key={op.id} className="p-4 rounded-lg border flex justify-between items-center">
+                        <div>
+                          <div className="font-semibold">{op.title}</div>
+                          <div className="text-sm text-gray-500">{op.department} • {op.location}</div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <button onClick={() => handleEditOpeningOpen(op)} className="px-3 py-1 border rounded">Edit</button>
+                          <button onClick={() => openFormModal(op.id)} className="px-3 py-1 bg-blue-600 text-white rounded">Form Editor</button>
+                          <button onClick={() => handleDeleteOpening(op.id)} className="text-red-600 flex items-center gap-1"><Icon name="trash" /> Delete</button>
+                        </div>
+                      </div>
+                    ))}
+                    <div style={{ height: 40 }} />
                   </div>
                 </div>
-              ))}
+              </div>
+
+              <aside className="bg-white rounded-lg p-6 shadow-sm sticky top-6 h-[calc(100vh-6rem)]">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold">Filters</h3>
+                  <button onClick={clearAllJobsFilters} className="text-sm text-blue-600 hover:underline">Clear all</button>
+                </div>
+
+                <div className="space-y-4">
+                  <MultiSelectDropdown
+                    label="Location"
+                    options={locationOptions}
+                    selected={jobsFilterLocations}
+                    onChange={setJobsFilterLocations}
+                    placeholder="All Location"
+                    searchEnabled={true}
+                  />
+
+                  <MultiSelectDropdown
+                    label="Department"
+                    options={departmentOptions}
+                    selected={jobsFilterDepartments}
+                    onChange={setJobsFilterDepartments}
+                    placeholder="All Department"
+                    searchEnabled={true}
+                  />
+                </div>
+              </aside>
             </div>
           </>
         )}
@@ -1100,89 +1215,89 @@ export default function App() {
           <>
             <h1 className="text-2xl font-semibold mb-6">Hiring</h1>
 
-            <div className="grid grid-cols-3 gap-6">
-              {/* Main candidates column */}
-              <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
-                {/* Search box */}
-                <div className="mb-4">
-                  <input
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search candidates by name, email, college, opening, source or id..."
-                    className="w-full border p-3 rounded"
-                  />
-                  <div className="text-xs text-gray-400 mt-2">Search searches name, email, college, opening title, source and response id.</div>
+            <div className="grid grid-cols-3 gap-6 h-[calc(100vh-6rem)] min-h-0">
+              <div className="col-span-2 bg-white rounded-lg shadow-sm flex flex-col min-h-0">
+                <div className="p-6 border-b">
+                  <div className="mb-4">
+                    <input
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search candidates by name, email, college, opening, source or id..."
+                      className="w-full border p-3 rounded"
+                    />
+                    <div className="text-xs text-gray-400 mt-2">Search searches name, email, college, opening title, source and response id.</div>
+                  </div>
+                  <h2 className="font-semibold mb-0">Candidates</h2>
                 </div>
 
-                <h2 className="font-semibold mb-4">Candidates</h2>
+                <div className="p-6 overflow-auto" style={{ flex: 1, minHeight: 0 }}>
+                  <div className="space-y-4">
+                    {filteredResponses.length === 0 && <div className="text-sm text-gray-500">No candidates match the selected filters or search.</div>}
 
-                <div className="space-y-4">
-                  {filteredResponses.length === 0 && <div className="text-sm text-gray-500">No candidates match the selected filters or search.</div>}
-
-                  {filteredResponses.map(resp => {
-                    const opening = openings.find(o => o.id === resp.openingId) || {};
-                    const candidateName = resp.fullName || (resp.answers && (resp.answers.fullname || resp.answers.name)) || 'Candidate';
-                    const candidateEmail = (resp.email || (resp.answers && resp.answers.email) || '').trim();
-                    const candidateCollege = extractCandidateCollege(resp);
-                    return (
-                      <div key={resp.id} className="p-6 border rounded relative bg-white min-h-[130px]">
-                        <div className="flex justify-between items-start">
-                          {/* Left column: name/email + opening */}
-                          <div style={{ minWidth: 0, maxWidth: 'calc(100% - 220px)' }}>
-                            <div className="font-semibold text-xl leading-tight break-words">{candidateName}</div>
-                            {candidateEmail ? (
-                              <div className="text-sm text-gray-600 mt-1" style={{ textTransform: 'uppercase' }}>{candidateEmail}</div>
-                            ) : null}
-                            <div className="text-sm text-gray-500 mt-3 break-words">
-                              {opening.title || '—'} &nbsp;•&nbsp; {opening.location || ''}
-                            </div>
-                            <div className="text-sm text-gray-500 mt-2">Source: <span className="break-words inline-block max-w-[60%]">{resp.source || 'unknown'}</span></div>
-
-                            {/* College display */}
-                            {candidateCollege ? (
-                              <div className="text-sm text-gray-600 mt-2">College: <span className="font-medium">{candidateCollege}</span></div>
-                            ) : null}
-
-                            {/* Bottom-left row: Resume and response id */}
-                            <div className="mt-4 text-sm flex flex-wrap items-center gap-2">
-                              {resp.resumeLink ? (
-                                <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline mr-3">Resume</a>
+                    {filteredResponses.map(resp => {
+                      const opening = openings.find(o => o.id === resp.openingId) || {};
+                      const candidateName = resp.fullName || (resp.answers && (resp.answers.fullname || resp.answers.name)) || 'Candidate';
+                      const candidateEmail = (resp.email || (resp.answers && resp.answers.email) || '').trim();
+                      const candidateCollege = extractCandidateCollege(resp);
+                      return (
+                        <div key={resp.id} className="p-6 border rounded relative bg-white min-h-[130px]">
+                          <div className="flex justify-between items-start">
+                            <div style={{ minWidth: 0, maxWidth: 'calc(100% - 220px)' }}>
+                              <div className="font-semibold text-xl leading-tight break-words">{candidateName}</div>
+                              {candidateEmail ? (
+                                <div className="text-sm text-gray-600 mt-1" style={{ textTransform: 'uppercase' }}>{candidateEmail}</div>
                               ) : null}
-                              <span className="text-gray-500 break-all text-xs">{resp.id}</span>
+                              <div className="text-sm text-gray-500 mt-3 break-words">
+                                {opening.title || '—'} &nbsp;•&nbsp; {opening.location || ''}
+                              </div>
+                              <div className="text-sm text-gray-500 mt-2">Source: <span className="break-words inline-block max-w-[60%]">{resp.source || 'unknown'}</span></div>
+
+                              {candidateCollege ? (
+                                <div className="text-sm text-gray-600 mt-2">College: <span className="font-medium">{candidateCollege}</span></div>
+                              ) : null}
+
+                              <div className="mt-4 text-sm flex flex-wrap items-center gap-2">
+                                {resp.resumeLink ? (
+                                  <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline mr-3">Resume</a>
+                                ) : null}
+                                <span className="text-gray-500 break-all text-xs">{resp.id}</span>
+                              </div>
+                            </div>
+
+                            <div className="w-[200px] flex flex-col items-end">
+                              <div className="text-xs text-gray-500 mb-1">Status</div>
+                              <select
+                                value={resp.status || 'Applied'}
+                                onChange={(e) => updateCandidateStatus(resp.id, e.target.value)}
+                                className="border p-2 rounded"
+                              >
+                                <option>Applied</option>
+                                <option>Screening</option>
+                                <option>Interview</option>
+                                <option>Offer</option>
+                                <option>Hired</option>
+                                <option>Rejected</option>
+                              </select>
                             </div>
                           </div>
 
-                          {/* Right column: status selector */}
-                          <div className="w-[200px] flex flex-col items-end">
-                            <div className="text-xs text-gray-500 mb-1">Status</div>
-                            <select
-                              value={resp.status || 'Applied'}
-                              onChange={(e) => updateCandidateStatus(resp.id, e.target.value)}
-                              className="border p-2 rounded"
-                            >
-                              <option>Applied</option>
-                              <option>Screening</option>
-                              <option>Interview</option>
-                              <option>Offer</option>
-                              <option>Hired</option>
-                              <option>Rejected</option>
-                            </select>
+                          <div className="absolute right-6 bottom-4 text-sm text-gray-500">
+                            Applied at: {resp.createdAt ? new Date(resp.createdAt).toLocaleString() : ''}
                           </div>
                         </div>
+                      );
+                    })}
 
-                        {/* Applied-at: anchored bottom-right */}
-                        <div className="absolute right-6 bottom-4 text-sm text-gray-500">
-                          Applied at: {resp.createdAt ? new Date(resp.createdAt).toLocaleString() : ''}
-                        </div>
-                      </div>
-                    );
-                  })}
+                    <div style={{ height: 40 }} />
+                  </div>
                 </div>
               </div>
 
-              {/* RIGHT SIDE: Filters aside */}
-              <aside className="bg-white rounded-lg p-6 shadow-sm">
-                <h3 className="font-semibold mb-4">Filters</h3>
+              <aside className="bg-white rounded-lg p-6 shadow-sm sticky top-6 h-[calc(100vh-6rem)]">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold">Filters</h3>
+                  <button onClick={clearAllHiringFilters} className="text-sm text-blue-600 hover:underline">Clear all</button>
+                </div>
 
                 <div className="space-y-4">
                   <MultiSelectDropdown
@@ -1360,7 +1475,7 @@ export default function App() {
                     <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">+Add</button>
                     <button onClick={() => handleSaveForm(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">Save</button>
                     <button onClick={() => handlePublishForm(op.id)} className="px-3 py-2 bg-green-600 text-white rounded">Publish</button>
-                    <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-2 border rounded text-red-600 bg-white hover:shadow">Delete</button>
+                {/* <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-2 border rounded text-red-600 bg-white hover:shadow">Delete</button> */}
                     <button onClick={() => closeFormModal()} className="px-3 py-2 border rounded bg-white hover:shadow">Close</button>
                   </div>
                 </div>
@@ -1420,7 +1535,6 @@ export default function App() {
                               <span className="whitespace-normal">{q.label}</span>
                             </div>
 
-                            {/* keep layout balanced; removed separate type display for non-protected */}
                             <div />
                           </div>
 
@@ -1441,7 +1555,6 @@ export default function App() {
                                 </>
                               ) : (
                                 <>
-                                  {/* delete icon sits where lock icon is — per request */}
                                   <button onClick={() => removeQuestion(op.id, q.id)} title="Remove question" className="p-1 -ml-1 rounded hover:bg-red-50">
                                     <Icon name="trash" className="w-4 h-4 text-red-500" />
                                   </button>
@@ -1451,7 +1564,6 @@ export default function App() {
                             </div>
 
                             <div className="flex items-center gap-3">
-                              {/* we removed textual 'Remove' button — deletion is handled by the icon on the left */}
                               <label className="flex items-center gap-2 text-xs text-gray-500">
                                 <input type="checkbox" checked={!!q.pageBreak} onChange={() => togglePageBreak(op.id, q.id)} />
                                 Page Break
@@ -1502,7 +1614,7 @@ export default function App() {
                         </div>
                       </div>
                     ) : (
-                      <div className="text-sm text-gray-500 pb-6">Form not yet published. Click Publish to generate shareable links per source.</div>
+                      <div className="text-sm text-gray-500 pb-6">Form not yet published. Click Publish to generate shareable link.</div>
                     )}
 
                     <div className="mt-4">
@@ -1542,7 +1654,6 @@ export default function App() {
                 </div>
               )}
 
-              {/* Validation panel (type-specific) */}
               <div className="pt-2 border-t">
                 <div className="text-sm font-medium mb-2">Validation (optional)</div>
 
@@ -1623,13 +1734,11 @@ export default function App() {
             {!publicView.submitted ? (
               <>
                 <form onSubmit={handlePublicSubmit} className="space-y-6">
-                  {/* build pages from schema */}
                   {(() => {
                     const schema = forms[publicView.openingId]?.questions || [];
                     const pages = buildPagesFromSchema(schema);
                     const pageIndex = (publicView.page || 0);
                     const currentPage = pages[pageIndex] || [];
-                    // render all fields in currentPage
                     return (
                       <PageRenderer
                         pageQuestions={currentPage}
@@ -1639,10 +1748,11 @@ export default function App() {
                         onBack={() => setPublicView(prev => ({ ...prev, page: Math.max(0, (prev.page || 0) - 1) }))}
                         onNext={() => setPublicView(prev => ({ ...prev, page: Math.min(((pages.length - 1) || 0), (prev.page || 0) + 1) }))}
                         isLastPage={pageIndex === pages.length - 1}
+                        values={formValues}
+                        setValues={setFormValues}
                       />
                     );
                   })()}
-
                 </form>
               </>
             ) : (
@@ -1660,11 +1770,14 @@ export default function App() {
 }
 
 /* -------------------------
-   PageRenderer component for public form pagination
+   PageRenderer component for public form pagination (CONTROLLED)
+   - receives `values` and `setValues` to persist inputs across pages
   ------------------------- */
-function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, totalPages = 1, onBack = () => {}, onNext = () => {}, isLastPage = true }) {
-  // We purposely don't manage component-level form state here -- the parent form submission
-  // gathers inputs by name; we must ensure each input's name equals question.id so handlePublicSubmit can read.
+function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, totalPages = 1, onBack = () => {}, onNext = () => {}, isLastPage = true, values = {}, setValues = () => {} }) {
+  const updateValue = (id, val) => {
+    setValues(prev => ({ ...prev, [id]: val }));
+  };
+
   return (
     <>
       {pageQuestions.map(q => (
@@ -1672,22 +1785,104 @@ function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, total
           <label className="block text-sm font-medium mb-2">{q.label}{q.required ? " *" : ""}</label>
 
           {q.type === "long_text" ? (
-            <textarea name={q.id} required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
+            <textarea
+              name={q.id}
+              value={values[q.id] || ""}
+              onChange={e => updateValue(q.id, e.target.value)}
+              required={q.required}
+              minLength={q.validation?.minLength}
+              maxLength={q.validation?.maxLength}
+              pattern={q.validation?.pattern}
+              className="w-full border p-2 rounded-md"
+            />
           ) : q.type === "dropdown" || q.type === "radio" ? (
-            <select name={q.id} required={q.required} className="w-full border p-2 rounded-md">{(q.options || []).map(opt => <option key={opt}>{opt}</option>)}</select>
+            <select
+              name={q.id}
+              value={values[q.id] || ""}
+              onChange={e => updateValue(q.id, e.target.value)}
+              required={q.required}
+              className="w-full border p-2 rounded-md"
+            >
+              <option value="">Select...</option>
+              {(q.options || []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+            </select>
           ) : q.type === "checkboxes" ? (
-            (q.options || []).map(opt => <div key={opt}><label className="inline-flex items-center"><input name={q.id} value={opt} type="checkbox" className="mr-2" /> {opt}</label></div>)
+            (q.options || []).map(opt => (
+              <div key={opt}>
+                <label className="inline-flex items-center">
+                  <input
+                    name={q.id}
+                    type="checkbox"
+                    checked={(values[q.id] || []).includes(opt)}
+                    onChange={e => {
+                      const existing = Array.isArray(values[q.id]) ? [...values[q.id]] : [];
+                      if (e.target.checked) {
+                        if (!existing.includes(opt)) existing.push(opt);
+                      } else {
+                        const idx = existing.indexOf(opt);
+                        if (idx !== -1) existing.splice(idx, 1);
+                      }
+                      updateValue(q.id, existing);
+                    }}
+                    className="mr-2"
+                  />
+                  <span>{opt}</span>
+                </label>
+              </div>
+            ))
           ) : q.type === "file" ? (
-            <input name={q.id} type="file" accept={q.validation?.accept || undefined} />
+            <input
+              name={q.id}
+              type="file"
+              accept={q.validation?.accept || undefined}
+              onChange={e => updateValue(q.id, e.target.files && e.target.files[0] ? e.target.files[0] : null)}
+            />
           ) : q.type === "number" ? (
-            <input name={q.id} type="number" required={q.required} min={q.validation?.min} max={q.validation?.max} className="w-full border p-2 rounded-md" />
+            <input
+              name={q.id}
+              type="number"
+              value={values[q.id] !== undefined ? values[q.id] : ""}
+              onChange={e => updateValue(q.id, e.target.value)}
+              required={q.required}
+              min={q.validation?.min}
+              max={q.validation?.max}
+              className="w-full border p-2 rounded-md"
+            />
           ) : q.type === "email" ? (
-            <input name={q.id} type="email" required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
+            <input
+              name={q.id}
+              type="email"
+              value={values[q.id] || ""}
+              onChange={e => updateValue(q.id, e.target.value)}
+              required={q.required}
+              minLength={q.validation?.minLength}
+              maxLength={q.validation?.maxLength}
+              pattern={q.validation?.pattern}
+              className="w-full border p-2 rounded-md"
+            />
           ) : q.id === CORE_QUESTIONS.phone.id || q.label.toLowerCase().includes("phone") ? (
-            // stronger input constraints for phone field in UI (also validated server-side in handlePublicSubmit)
-            <input name={q.id} type="tel" required={q.required} pattern="^\d{7,15}$" inputMode="numeric" title="Enter 7 to 15 digits" className="w-full border p-2 rounded-md" />
+            <input
+              name={q.id}
+              type="tel"
+              value={values[q.id] || ""}
+              onChange={e => updateValue(q.id, e.target.value)}
+              required={q.required}
+              pattern="^\d{7,15}$"
+              inputMode="numeric"
+              title="Enter 7 to 15 digits"
+              className="w-full border p-2 rounded-md"
+            />
           ) : (
-            <input name={q.id} required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
+            <input
+              name={q.id}
+              value={values[q.id] || ""}
+              onChange={e => updateValue(q.id, e.target.value)}
+              required={q.required}
+              minLength={q.validation?.minLength}
+              maxLength={q.validation?.maxLength}
+              pattern={q.validation?.pattern}
+              className="w-full border p-2 rounded-md"
+            />
           )}
         </div>
       ))}
