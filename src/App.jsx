@@ -29,10 +29,8 @@ const PROTECTED_IDS = new Set(Object.values(CORE_QUESTIONS).map(q => q.id));
 
 /* -------------------------
    Template data (non-core only)
-   remove redundant core items from template
    ------------------------- */
 const templateQuestions = [
-  // core fields intentionally removed from template — ensureCoreFieldsInForm will add them
   { id: uuidv4(), type: "number", label: "Years of experience" },
   { id: uuidv4(), type: "url", label: "LinkedIn / Portfolio URL" },
   { id: uuidv4(), type: "dropdown", label: "How did you hear about us?", options: ["LinkedIn", "Internshala", "Referral"] },
@@ -53,7 +51,7 @@ const QUESTION_TYPES = [
 ];
 
 /* -------------------------
-   MultiSelectDropdown (unchanged behavior)
+   MultiSelectDropdown
   ------------------------- */
 function MultiSelectDropdown({ label, options = [], selected = [], onChange = () => {}, placeholder = "Select", searchEnabled = true }) {
   const [open, setOpen] = useState(false);
@@ -257,7 +255,7 @@ export default function App() {
   }
 
   /* -------------------------
-     Helper: ensure core fields exist in a form object (mutating copy)
+     Helper: ensure core fields exist in a form object
   ------------------------- */
   function ensureCoreFieldsInForm(formObj) {
     const existingIds = new Set((formObj.questions || []).map(q => q.id));
@@ -269,10 +267,9 @@ export default function App() {
     }
     formObj.questions = (formObj.questions || []).map(q => {
       if (PROTECTED_IDS.has(q.id)) {
-        return { ...q, required: true };
+        return { ...q, required: true, validation: q.validation || {}, pageBreak: q.pageBreak || false };
       }
-      // ensure validation object always exists
-      return { ...q, validation: q.validation || {} };
+      return { ...q, validation: q.validation || {}, pageBreak: q.pageBreak || false };
     });
     formObj.meta = formObj.meta || {};
     formObj.meta.coreFields = formObj.meta.coreFields || {
@@ -400,7 +397,7 @@ export default function App() {
   }
 
   function addQuestion(openingId, q) {
-    const question = { ...q, id: q.id || uuidv4(), validation: q.validation || {} };
+    const question = { ...q, id: q.id || uuidv4(), validation: q.validation || {}, pageBreak: q.pageBreak || false };
     setForms((f) => {
       const existing = f[openingId] || { questions: [], meta: null };
       const exists = (existing.questions || []).some(x => x.id === question.id);
@@ -420,6 +417,16 @@ export default function App() {
       const existing = f[openingId] || { questions: [], meta: null };
       const newQuestions = (existing.questions || []).filter(q => q.id !== qid);
       return { ...f, [openingId]: { ...existing, questions: newQuestions, meta: existing.meta || null } };
+    });
+  }
+
+  function togglePageBreak(openingId, qid) {
+    setForms(f => {
+      const copy = { ...f };
+      const obj = copy[openingId] || { questions: [] };
+      obj.questions = (obj.questions || []).map(q => q.id === qid ? { ...q, pageBreak: !q.pageBreak } : q);
+      copy[openingId] = obj;
+      return copy;
     });
   }
 
@@ -540,7 +547,8 @@ export default function App() {
   }
 
   function openPublicFormByLink(openingId, source) {
-    setPublicView({ openingId, source, submitted: false });
+    // initialize page index to 0
+    setPublicView({ openingId, source, submitted: false, page: 0 });
   }
 
   async function deleteFormByOpening(openingId) {
@@ -587,7 +595,7 @@ export default function App() {
   }
 
   /* -------------------------
-     Public form submission with validation
+     Public form submission with validation and top-level core fields
   ------------------------- */
   async function handlePublicSubmit(e) {
     e.preventDefault();
@@ -646,18 +654,15 @@ export default function App() {
             // ignore bad regex stored in validation
           }
         }
-        if (q.type === 'email' && s) {
+        if (q.id === CORE_QUESTIONS.email.id || q.type === 'email') {
           const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-          if (!emailRe.test(s)) { alert(`${q.label} must be a valid email address.`); return; }
+          if (s && !emailRe.test(s)) { alert(`${q.label} must be a valid email address.`); return; }
         }
-        if (q.type === 'url' && s) {
-          try {
-            /* eslint-disable no-new */
-            new URL(s);
-          } catch (err) {
-            alert(`${q.label} must be a valid URL.`); return;
-          }
-        }
+      }
+      if (q.id === CORE_QUESTIONS.phone.id || q.label.toLowerCase().includes('phone')) {
+        const s = (val || "").toString().replace(/\D/g, '');
+        if (q.required && s.length === 0) { alert(`${q.label} is required.`); return; }
+        if (s && (s.length < 7 || s.length > 15)) { alert(`${q.label} must be between 7 and 15 digits.`); return; }
       }
       if (q.type === 'number') {
         if (val !== undefined && val !== null && String(val).trim() !== "") {
@@ -686,6 +691,8 @@ export default function App() {
 
     // if all validations passed — build FormData and submit
     const fd = new FormData();
+
+    // Add answers and files
     for (const [k, v] of Object.entries(values)) {
       if (v === null || v === undefined) continue;
       if (v instanceof File) {
@@ -695,6 +702,23 @@ export default function App() {
       } else {
         fd.append(k, v);
       }
+    }
+
+    // Also append top-level core fields so backend receives them as first-class fields
+    // (so they can be saved into the top-level response properties and Google Sheet columns)
+    try {
+      const core = formObj.meta?.coreFields || {};
+      const fullnameVal = values[core.fullNameId] || values[CORE_QUESTIONS.fullName.id] || "";
+      const emailVal = values[core.emailId] || values[CORE_QUESTIONS.email.id] || "";
+      const phoneVal = values[core.phoneId] || values[CORE_QUESTIONS.phone.id] || "";
+      const collegeVal = values[core.collegeId] || values[CORE_QUESTIONS.college.id] || "";
+
+      if (fullnameVal) fd.append('fullName', fullnameVal);
+      if (emailVal) fd.append('email', emailVal);
+      if (phoneVal) fd.append('phone', phoneVal);
+      if (collegeVal) fd.append('college', collegeVal);
+    } catch (err) {
+      // swallow errors - not critical
     }
 
     try {
@@ -719,6 +743,23 @@ export default function App() {
       console.error('Submit error', err);
       alert('Submission failed: ' + (err.message || 'unknown error'));
     }
+  }
+
+  // Build pages from schema by splitting at questions with pageBreak === true
+  function buildPagesFromSchema(schema = []) {
+    const pages = [];
+    let current = [];
+    for (let i = 0; i < schema.length; i++) {
+      const q = schema[i];
+      current.push(q);
+      if (q.pageBreak) {
+        pages.push(current);
+        current = [];
+      }
+    }
+    if (current.length) pages.push(current);
+    if (pages.length === 0) pages.push([]); // ensure at least one page
+    return pages;
   }
 
   const currentSchema = publicView ? (forms[publicView.openingId]?.questions || []) : [];
@@ -813,22 +854,15 @@ export default function App() {
     return ((r.email || (r.answers && r.answers.email)) || "").trim();
   }
   function extractCandidateCollege(r) {
+    // prefer top-level college if present, then fallback to answers
+    const top = (r.college || r.collegeName || r.college_name || "").trim();
+    if (top) return top;
     const candidates = [
-      r.college,
-      r.collegeName,
-      r.college_name,
-      r.college_institute,
-      r.college_institute_name,
-      r.answers && (r.answers.college || r.answers.collegeName || r.answers.college_name || r.answers.institute || r.answers.institution)
+      r.answers && (r.answers[CORE_QUESTIONS.college.id] || r.answers.college || r.answers.collegeName || r.answers.institute || r.answers.institution)
     ];
     for (const c of candidates) {
       if (typeof c === 'string' && c.trim()) return c.trim();
     }
-    try {
-      const form = forms[r.openingId];
-      const collegeId = form?.meta?.coreFields?.collegeId;
-      if (collegeId && r.answers && r.answers[collegeId]) return (r.answers[collegeId] || "").trim();
-    } catch (e) {}
     return "";
   }
 
@@ -1058,7 +1092,7 @@ export default function App() {
                               <div className="text-sm text-gray-600 mt-2">College: <span className="font-medium">{candidateCollege}</span></div>
                             ) : null}
 
-                            {/* Bottom-left row: Resume and response id - separated and allowed to wrap so they don't overlap */}
+                            {/* Bottom-left row: Resume and response id */}
                             <div className="mt-4 text-sm flex flex-wrap items-center gap-2">
                               {resp.resumeLink ? (
                                 <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline mr-3">Resume</a>
@@ -1067,7 +1101,7 @@ export default function App() {
                             </div>
                           </div>
 
-                          {/* Right column: status selector (kept top-right) */}
+                          {/* Right column: status selector */}
                           <div className="w-[200px] flex flex-col items-end">
                             <div className="text-xs text-gray-500 mb-1">Status</div>
                             <select
@@ -1266,10 +1300,10 @@ export default function App() {
                   <div className="text-xs text-gray-500">Edit questions, save, publish, or share links. Core fields are mandatory and cannot be removed.</div>
                 </div>
                 <div className="flex items-center gap-3">
-                  <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">+ Custom Question</button>
+                  <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">+ Add</button>
                   <button onClick={() => handleSaveForm(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">Save</button>
                   <button onClick={() => handlePublishForm(op.id)} className="px-3 py-2 bg-green-600 text-white rounded">Publish</button>
-                  <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-2 border rounded text-red-600 bg-white hover:shadow">Delete Saved Form</button>
+                  <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-2 border rounded text-red-600 bg-white hover:shadow">Delete</button>
                   <button onClick={() => closeFormModal()} className="px-3 py-2 border rounded bg-white hover:shadow">Close</button>
                 </div>
               </div>
@@ -1280,7 +1314,7 @@ export default function App() {
                   <h3 className="font-semibold mb-2">Question Bank</h3>
                   <div className="space-y-3">
                     {questionBank.length === 0 ? (
-                      <div className="text-xs text-gray-400">No questions in bank yet. Create one using "+ Custom Question".</div>
+                      <div className="text-xs text-gray-400">No questions in bank yet. Create one using "+ Add".</div>
                     ) : (
                       questionBank.map(q => (
                         <div key={q.id} className="p-3 border rounded bg-white hover:bg-gray-50 cursor-pointer" onClick={() => addQuestion(op.id, q)}>
@@ -1315,8 +1349,14 @@ export default function App() {
                             {q.validation && Object.keys(q.validation).length ? ` • Validation: ${Object.entries(q.validation).map(([k,v]) => `${k}=${v}`).join(', ')}` : ''}
                           </div>
                         </div>
-                        <div className="flex gap-2 items-start">
-                          {!PROTECTED_IDS.has(q.id) ? <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500 text-sm">Remove</button> : <div className="text-xs text-gray-400">Protected</div>}
+                        <div className="flex flex-col gap-2 items-end">
+                          <div className="flex gap-2">
+                            {!PROTECTED_IDS.has(q.id) ? <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500 text-sm">Remove</button> : <div className="text-xs text-gray-400">Protected</div>}
+                          </div>
+                          <div>
+                            <label className="text-xs text-gray-500 mr-2">Page break after</label>
+                            <input type="checkbox" checked={!!q.pageBreak} onChange={() => togglePageBreak(op.id, q.id)} />
+                          </div>
                         </div>
                       </li>
                     ))}
@@ -1463,102 +1503,39 @@ export default function App() {
       {publicView && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-[760px] max-h-[90vh] overflow-auto shadow-xl">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h3 className="text-2xl font-semibold mb-1">Personal data</h3>
+                <div className="text-sm text-gray-500 mb-1">Fields with <span className="text-red-500">*</span> are mandatory.</div>
+              </div>
+              <div>
+                <button onClick={() => setPublicView(null)} className="px-3 py-1 border rounded">Close</button>
+              </div>
+            </div>
+
             {!publicView.submitted ? (
               <>
-                <h3 className="text-2xl font-semibold mb-1">Personal data</h3>
-                <div className="text-sm text-gray-500 mb-4">Fields with <span className="text-red-500">*</span> are mandatory.</div>
-
                 <form onSubmit={handlePublicSubmit} className="space-y-6">
+                  {/* build pages from schema */}
                   {(() => {
-                    const q = findQ("full name") || findQ("name");
-                    if (!q) return null;
+                    const schema = forms[publicView.openingId]?.questions || [];
+                    const pages = buildPagesFromSchema(schema);
+                    const pageIndex = (publicView.page || 0);
+                    const currentPage = pages[pageIndex] || [];
+                    // render all fields in currentPage
                     return (
-                      <div>
-                        <label className="block text-sm font-medium mb-2">{q.label}{q.required ? " *" : ""}</label>
-                        <input name={q.id} required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border-2 border-gray-200 rounded-md p-3 text-base focus:outline-none focus:ring-4 focus:ring-blue-100 focus:border-blue-400" />
-                      </div>
+                      <PageRenderer
+                        pageQuestions={currentPage}
+                        allSchema={schema}
+                        pageIndex={pageIndex}
+                        totalPages={pages.length}
+                        onBack={() => setPublicView(prev => ({ ...prev, page: Math.max(0, (prev.page || 0) - 1) }))}
+                        onNext={() => setPublicView(prev => ({ ...prev, page: Math.min(((pages.length - 1) || 0), (prev.page || 0) + 1) }))}
+                        isLastPage={pageIndex === pages.length - 1}
+                      />
                     );
                   })()}
 
-                  {(() => {
-                    const q = findQ("profile") || findQ("picture") || findQ("photo") || findQ("profile picture");
-                    if (!q) return null;
-                    return (
-                      <div>
-                        <label className="block text-sm font-medium mb-2">Profile picture</label>
-                        <label className="block border-2 border-dashed border-gray-300 rounded-lg p-4 text-center cursor-pointer hover:border-blue-400 transition-colors">
-                          <div className="flex items-center gap-4 justify-center">
-                            <div className="w-14 h-14 rounded-full bg-gray-100 flex items-center justify-center text-xl">📷</div>
-                            <div className="text-left">
-                              <div className="text-sm">Drop your file here or <span className="text-blue-600 underline">Select a file</span></div>
-                              <div className="text-xs text-gray-400 mt-1">Only JPG, PNG are allowed — up to 2MB</div>
-                            </div>
-                          </div>
-                          <input type="file" name={q.id} accept={q.validation?.accept || undefined} className="hidden" />
-                        </label>
-                      </div>
-                    );
-                  })()}
-
-                  <div className="grid grid-cols-2 gap-4">
-                    {(() => {
-                      const q1 = findQ("birth") || findQ("date");
-                      const q2 = findQ("country");
-                      return (
-                        <>
-                          <div>
-                            {q1 && (
-                              <>
-                                <label className="block text-sm font-medium mb-2">{q1.label}{q1.required ? " *" : ""}</label>
-                                <input type="date" name={q1.id} className="w-full border p-2 rounded-md" />
-                              </>
-                            )}
-                          </div>
-                          <div>
-                            {q2 && (
-                              <>
-                                <label className="block text-sm font-medium mb-2">{q2.label}{q2.required ? " *" : ""}</label>
-                                <select name={q2.id} className="w-full border p-2 rounded-md">
-                                  <option>India</option><option>United States</option><option>United Kingdom</option><option>Australia</option>
-                                </select>
-                              </>
-                            )}
-                          </div>
-                        </>
-                      );
-                    })()}
-                  </div>
-
-                  {/* render remaining schema-driven fields */}
-                  {currentSchema.map(q => {
-                    // skip handled above patterns — but keep general render for everything
-                    const skipKeys = ["name","full name","profile","picture","photo","birth","date","country","mother","gender","color","race","marital","special needs","state","city"];
-                    const lower = (q.label || "").toLowerCase();
-                    // We'll still render everything; earlier code used filtering — we render all for clarity
-                    return (
-                      <div key={q.id}>
-                        <label className="block text-sm font-medium mb-2">{q.label}{q.required ? " *" : ""}</label>
-                        {q.type === "long_text" ? (
-                          <textarea name={q.id} required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
-                        ) : q.type === "dropdown" || q.type === "radio" ? (
-                          <select name={q.id} required={q.required} className="w-full border p-2 rounded-md">{(q.options || []).map(opt => <option key={opt}>{opt}</option>)}</select>
-                        ) : q.type === "checkboxes" ? (
-                          (q.options || []).map(opt => <div key={opt}><label className="inline-flex items-center"><input name={q.id} value={opt} type="checkbox" className="mr-2" /> {opt}</label></div>)
-                        ) : q.type === "file" ? (
-                          <input name={q.id} type="file" accept={q.validation?.accept || undefined} />
-                        ) : q.type === "number" ? (
-                          <input name={q.id} type="number" required={q.required} min={q.validation?.min} max={q.validation?.max} className="w-full border p-2 rounded-md" />
-                        ) : (
-                          <input name={q.id} required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
-                        )}
-                      </div>
-                    );
-                  })}
-
-                  <div className="flex items-center justify-between mt-4">
-                    <button type="button" onClick={() => setPublicView(null)} className="px-4 py-2 border rounded-md text-sm">← BACK</button>
-                    <button type="submit" className="px-6 py-2 bg-blue-600 text-white rounded-md text-sm">NEXT →</button>
-                  </div>
                 </form>
               </>
             ) : (
@@ -1572,5 +1549,60 @@ export default function App() {
         </div>
       )}
     </div>
+  );
+}
+
+/* -------------------------
+   PageRenderer component for public form pagination
+   - receives pageQuestions: array of questions for current page
+   - allSchema: entire schema (used for validation on submit)
+   - pageIndex, totalPages, onBack, onNext
+   - this renders inputs and the appropriate buttons (Back/Next/Submit Form)
+  ------------------------- */
+function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, totalPages = 1, onBack = () => {}, onNext = () => {}, isLastPage = true }) {
+  // We purposely don't manage component-level form state here -- the parent form submission
+  // gathers inputs by name; we must ensure each input's name equals question.id so handlePublicSubmit can read.
+  return (
+    <>
+      {pageQuestions.map(q => (
+        <div key={q.id}>
+          <label className="block text-sm font-medium mb-2">{q.label}{q.required ? " *" : ""}</label>
+
+          {q.type === "long_text" ? (
+            <textarea name={q.id} required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
+          ) : q.type === "dropdown" || q.type === "radio" ? (
+            <select name={q.id} required={q.required} className="w-full border p-2 rounded-md">{(q.options || []).map(opt => <option key={opt}>{opt}</option>)}</select>
+          ) : q.type === "checkboxes" ? (
+            (q.options || []).map(opt => <div key={opt}><label className="inline-flex items-center"><input name={q.id} value={opt} type="checkbox" className="mr-2" /> {opt}</label></div>)
+          ) : q.type === "file" ? (
+            <input name={q.id} type="file" accept={q.validation?.accept || undefined} />
+          ) : q.type === "number" ? (
+            <input name={q.id} type="number" required={q.required} min={q.validation?.min} max={q.validation?.max} className="w-full border p-2 rounded-md" />
+          ) : q.type === "email" ? (
+            <input name={q.id} type="email" required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
+          ) : q.id === CORE_QUESTIONS.phone.id || q.label.toLowerCase().includes("phone") ? (
+            <input name={q.id} type="tel" required={q.required} pattern="\d*" className="w-full border p-2 rounded-md" />
+          ) : (
+            <input name={q.id} required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
+          )}
+        </div>
+      ))}
+
+      <div className="flex items-center justify-between mt-4">
+        <div>
+          {pageIndex > 0 ? <button type="button" onClick={onBack} className="px-4 py-2 border rounded-md text-sm">← BACK</button> : <div />}
+        </div>
+
+        <div>
+          {totalPages <= 1 ? (
+            <button type="submit" className="px-6 py-2 bg-blue-600 text-white rounded-md text-sm">Submit Form</button>
+          ) : isLastPage ? (
+            <button type="submit" className="px-6 py-2 bg-blue-600 text-white rounded-md text-sm">Submit Form</button>
+          ) : (
+            <button type="button" onClick={onNext} className="px-6 py-2 bg-blue-600 text-white rounded-md text-sm">NEXT →</button>
+          )}
+        </div>
+      </div>
+    </>
   );
 }
