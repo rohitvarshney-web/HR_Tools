@@ -1,3 +1,4 @@
+// src/App.jsx
 import React, { useState, useEffect, useMemo } from "react";
 import { v4 as uuidv4 } from "uuid";
 
@@ -9,7 +10,9 @@ const Icon = ({ name, className = "w-5 h-5 inline-block" }) => {
     ),
     plus: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 5v14M5 12h14"/></svg>),
     trash: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 7h12M9 7V4h6v3m-7 4v9m4-9v9"/></svg>),
-    chevron: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 9l6 6 6-6"/></svg>)
+    chevron: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 9l6 6 6-6"/></svg>),
+    toggleOn: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="1" y="6" width="22" height="12" rx="6"/><circle cx="17" cy="12" r="3" /></svg>),
+    toggleOff: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="1" y="6" width="22" height="12" rx="6"/><circle cx="7" cy="12" r="3" /></svg>),
   };
   return icons[name] || null;
 };
@@ -160,7 +163,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("overview");
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [newOpening, setNewOpening] = useState({ title: "", location: "Delhi", department: "", preferredSources: [], durationMins: 30 });
+  const [newOpening, setNewOpening] = useState({ title: "", location: "Delhi", department: "", preferredSources: [], durationMins: 30, is_deleted: false });
   const [forms, setForms] = useState({});
   const [responses, setResponses] = useState([]);
   const [questionBank, setQuestionBank] = useState([]);
@@ -201,9 +204,17 @@ export default function App() {
   const [jobsSearch, setJobsSearch] = useState("");
   const [jobsFilterLocations, setJobsFilterLocations] = useState([]);
   const [jobsFilterDepartments, setJobsFilterDepartments] = useState([]);
+  const [jobsSubtab, setJobsSubtab] = useState("active"); // "active" or "disabled"
+
+  // Hiring subtabs
+  const [hiringSubtab, setHiringSubtab] = useState("active"); // "active" or "disabled"
 
   // Search query for candidate list (search across name, email, college, opening title, source, response id)
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Confirmation modal state for disabling opening
+  const [confirmDisableOpeningId, setConfirmDisableOpeningId] = useState(null);
+  const [confirmDisableOpeningName, setConfirmDisableOpeningName] = useState("");
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -308,6 +319,8 @@ export default function App() {
       resumeId: CORE_QUESTIONS.resume.id,
       collegeId: CORE_QUESTIONS.college.id,
     };
+    // ensure meta has is_deleted boolean (default false)
+    formObj.meta.is_deleted = !!formObj.meta.is_deleted;
     return formObj;
   }
 
@@ -318,7 +331,8 @@ export default function App() {
     try {
       if (!localStorage.getItem('token')) return;
       const rows = await apiFetch('/api/openings');
-      setOpenings(rows);
+      // Normalize to include is_deleted default false
+      setOpenings((rows || []).map(r => ({ ...r, is_deleted: !!r.is_deleted })));
     } catch (err) { console.error('loadOpenings', err); }
   }
 
@@ -326,7 +340,8 @@ export default function App() {
     try {
       if (!localStorage.getItem('token')) return;
       const rows = await apiFetch('/api/responses');
-      setResponses(rows || []);
+      // normalize
+      setResponses((rows || []).map(r => ({ ...r, is_deleted: !!r.is_deleted })));
     } catch (err) { console.error('loadResponses', err); }
   }
 
@@ -345,12 +360,13 @@ export default function App() {
           if (looksLikeCollegeLabel(q.label)) return false;
           return true;
         });
-        const obj = { questions, meta: (f.data && f.data.meta) || null, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at, openingId: f.openingId };
+        const obj = { questions, meta: (f.data && f.data.meta) || {}, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at, openingId: f.openingId };
+        obj.meta.is_deleted = !!obj.meta.is_deleted;
         map[f.openingId] = ensureCoreFieldsInForm(obj);
       });
       (openings || []).forEach(op => {
         if (!map[op.id]) {
-          const base = { questions: templateQuestions.map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } };
+          const base = { questions: templateQuestions.map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id }, is_deleted: false } };
           map[op.id] = ensureCoreFieldsInForm(base);
         }
       });
@@ -370,7 +386,7 @@ export default function App() {
      UI functions (create/edit/delete/publish/save)
   ------------------------- */
   function openCreate() {
-    setNewOpening({ title: "", location: "Delhi", department: "", preferredSources: [], durationMins: 30 });
+    setNewOpening({ title: "", location: "Delhi", department: "", preferredSources: [], durationMins: 30, is_deleted: false });
     setShowCreate(true);
   }
 
@@ -382,6 +398,7 @@ export default function App() {
       department: newOpening.department,
       preferredSources: newOpening.preferredSources || [],
       durationMins: newOpening.durationMins,
+      is_deleted: !!newOpening.is_deleted,
     };
 
     try {
@@ -395,7 +412,7 @@ export default function App() {
         setOpenings(s => [created, ...s]);
       }
       // initialize form with core + non-core template items
-      setForms(f => ({ ...f, [created.id]: ensureCoreFieldsInForm({ questions: templateQuestions.map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } }) }));
+      setForms(f => ({ ...f, [created.id]: ensureCoreFieldsInForm({ questions: templateQuestions.map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id }, is_deleted: false } }) }));
       setShowCreate(false);
     } catch (err) {
       console.error('create opening', err);
@@ -622,7 +639,7 @@ export default function App() {
     setForms((f) => {
       const copy = { ...f };
       if (!copy[openingId]) {
-        copy[openingId] = ensureCoreFieldsInForm({ questions: templateQuestions.map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } });
+        copy[openingId] = ensureCoreFieldsInForm({ questions: templateQuestions.map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id }, is_deleted: false } });
       } else {
         copy[openingId] = ensureCoreFieldsInForm({ questions: (copy[openingId].questions || []).map(q => ({ ...q })), meta: (copy[openingId].meta || {}) });
       }
@@ -849,6 +866,122 @@ export default function App() {
   }
 
   /* -------------------------
+     Toggle / Enable-Disable logic & propagation
+     - opening -> form -> responses (propagate immediately)
+     - responses can be toggled independently
+  ------------------------- */
+
+  // Request to disable (shows confirmation modal)
+  function requestDisableOpening(openingId) {
+    const op = openings.find(o => o.id === openingId);
+    setConfirmDisableOpeningId(openingId);
+    setConfirmDisableOpeningName(op?.title || openingId);
+  }
+
+  // Cancel confirmation
+  function cancelDisableOpening() {
+    setConfirmDisableOpeningId(null);
+    setConfirmDisableOpeningName("");
+  }
+
+  // Confirm disable (propagate)
+  async function confirmDisableOpening() {
+    const openingId = confirmDisableOpeningId;
+    if (!openingId) return;
+    await toggleOpeningDeleted(openingId, true);
+    setConfirmDisableOpeningId(null);
+    setConfirmDisableOpeningName("");
+  }
+
+  // Toggle opening is_deleted. If toDeleted === true and call should confirm, use requestDisableOpening first.
+  async function toggleOpeningDeleted(openingId, toDeleted) {
+    // immediate local update & propagation
+    setOpenings(prev => prev.map(op => op.id === openingId ? { ...op, is_deleted: !!toDeleted } : op));
+    setForms(prev => {
+      const copy = { ...prev };
+      if (copy[openingId]) {
+        const meta = { ...(copy[openingId].meta || {}) };
+        meta.is_deleted = !!toDeleted;
+        copy[openingId] = { ...(copy[openingId] || {}), meta };
+      } else {
+        // ensure presence
+        copy[openingId] = ensureCoreFieldsInForm({ questions: templateQuestions.map(q => ({ ...q })), meta: { is_deleted: !!toDeleted } });
+      }
+      return copy;
+    });
+    setResponses(prev => prev.map(r => r.openingId === openingId ? { ...r, is_deleted: !!toDeleted } : r));
+
+    // persist to server if signed in
+    if (!localStorage.getItem('token')) {
+      // local-only
+      alert(`Opening ${toDeleted ? 'disabled' : 'enabled'} locally (not persisted).`);
+      return;
+    }
+
+    try {
+      // Update opening on server
+      await apiFetch(`/api/openings/${encodeURIComponent(openingId)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_deleted: !!toDeleted }) });
+
+      // Update form(s) for opening (if server form exists)
+      try {
+        const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
+        if (serverForms && serverForms.length > 0) {
+          const serverForm = serverForms[0];
+          const updatedPayload = { openingId, data: { ...(serverForm.data || {}), meta: { ...(serverForm.data?.meta || {}), is_deleted: !!toDeleted }, questions: serverForm.data?.questions || [] } };
+          await apiFetch(`/api/forms/${serverForm.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updatedPayload) });
+        }
+      } catch (err) {
+        // ignore form update errors but log them
+        console.warn('Failed to update server form is_deleted', err);
+      }
+
+      // Update responses for this opening on server (set is_deleted)
+      try {
+        const serverResponses = await apiFetch(`/api/responses?openingId=${encodeURIComponent(openingId)}`);
+        if (serverResponses && serverResponses.length) {
+          // iterate and update each
+          await Promise.all(serverResponses.map(r => {
+            // prefer a dedicated endpoint if available; using PUT to /api/responses/:id to update fields
+            return apiFetch(`/api/responses/${encodeURIComponent(r.id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_deleted: !!toDeleted }) }).catch(err => {
+              console.warn('Failed to update response is_deleted for', r.id, err);
+            });
+          }));
+        }
+      } catch (err) {
+        console.warn('Failed to fetch server responses for propagation', err);
+      }
+
+      await loadOpenings();
+      await loadForms();
+      await loadResponses();
+    } catch (err) {
+      console.error('toggleOpeningDeleted failed', err);
+      alert('Failed to update opening on server: ' + (err?.body?.error || err.message || 'unknown'));
+      // rollback locally by reloading
+      await loadOpenings();
+      await loadForms();
+      await loadResponses();
+    }
+  }
+
+  // Toggle response is_deleted independently
+  async function toggleResponseDeleted(responseId, toDeleted) {
+    setResponses(prev => prev.map(r => r.id === responseId ? { ...r, is_deleted: !!toDeleted } : r));
+    if (!localStorage.getItem('token')) {
+      alert(`Response ${toDeleted ? 'disabled' : 'enabled'} locally (not persisted).`);
+      return;
+    }
+    try {
+      await apiFetch(`/api/responses/${encodeURIComponent(responseId)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_deleted: !!toDeleted }) });
+      await loadResponses();
+    } catch (err) {
+      console.error('toggleResponseDeleted failed', err);
+      alert('Failed to update response: ' + (err?.body?.error || err.message || 'unknown'));
+      await loadResponses();
+    }
+  }
+
+  /* -------------------------
      Derived filter options from data
   ------------------------- */
   const openingOptions = useMemo(() => {
@@ -928,6 +1061,10 @@ export default function App() {
   const filteredResponses = useMemo(() => {
     const q = (searchQuery || "").toLowerCase().trim();
     return responses.filter(r => {
+      // filter by hiring subtab: show only active or disabled
+      if (hiringSubtab === 'active' && r.is_deleted) return false;
+      if (hiringSubtab === 'disabled' && !r.is_deleted) return false;
+
       // Opening filter
       if (filterOpenings.length > 0 && !filterOpenings.includes(r.openingId)) return false;
       // Location filter -> find opening location
@@ -955,14 +1092,19 @@ export default function App() {
 
       return true;
     });
-  }, [responses, openings, filterOpenings, filterLocations, filterDepartments, filterSources, filterStatus, searchQuery]);
+  }, [responses, openings, filterOpenings, filterLocations, filterDepartments, filterSources, filterStatus, searchQuery, hiringSubtab]);
 
   /* -------------------------
      Jobs tab filtered openings
+     - now respects jobsSubtab (active/disabled)
   ------------------------- */
   const filteredOpeningsForJobs = useMemo(() => {
     const q = (jobsSearch || "").toLowerCase().trim();
     return openings.filter(op => {
+      // jobs subtab filter
+      if (jobsSubtab === 'active' && op.is_deleted) return false;
+      if (jobsSubtab === 'disabled' && !op.is_deleted) return false;
+
       if (jobsFilterLocations.length > 0 && !jobsFilterLocations.includes(op.location || "")) return false;
       if (jobsFilterDepartments.length > 0 && !jobsFilterDepartments.includes(op.department || "")) return false;
       if (q) {
@@ -973,7 +1115,7 @@ export default function App() {
       }
       return true;
     });
-  }, [openings, jobsSearch, jobsFilterLocations, jobsFilterDepartments]);
+  }, [openings, jobsSearch, jobsFilterLocations, jobsFilterDepartments, jobsSubtab]);
 
   /* -------------------------
      Clear all helper functions for filters
@@ -1059,7 +1201,7 @@ export default function App() {
                   <div className="overflow-auto" style={{ flex: 1, minHeight: 0 }}>
                     <div className="space-y-4">
                       {openings.map(op => (
-                        <div key={op.id} className="p-4 rounded-lg border border-gray-100">
+                        <div key={op.id} className={`p-4 rounded-lg border border-gray-100 ${op.is_deleted ? 'opacity-60 bg-red-50' : ''}`}>
                           <div className="flex justify-between items-start">
                             <div>
                               <div className="font-semibold">{op.title}</div>
@@ -1067,10 +1209,20 @@ export default function App() {
                               <div className="text-xs text-gray-400 mt-1">Created on {op.createdAt}</div>
                             </div>
                             <div className="text-right">
-                              <div className="text-xs text-gray-500">Responses: {responses.filter(r => r.openingId === op.id).length}</div>
-                              <div className="mt-2 flex gap-2">
+                              <div className="text-xs text-gray-500">Responses: {responses.filter(r => r.openingId === op.id && !r.is_deleted).length}</div>
+                              <div className="mt-2 flex gap-2 items-center justify-end">
                                 <button onClick={() => handleEditOpeningOpen(op)} className="px-2 py-1 border rounded text-sm">Edit</button>
                                 <button onClick={() => openFormModal(op.id)} className="px-2 py-1 bg-blue-600 text-white rounded text-sm">Open Form Editor</button>
+                              </div>
+                              <div className="mt-2 text-xs">
+                                <label className="inline-flex items-center gap-2">
+                                  <input type="checkbox" checked={!op.is_deleted} onChange={(e) => {
+                                    const toDeleted = !e.target.checked;
+                                    if (toDeleted) requestDisableOpening(op.id);
+                                    else toggleOpeningDeleted(op.id, false);
+                                  }} />
+                                  <span className="text-xs text-gray-300">{op.is_deleted ? 'Disabled' : 'Active'}</span>
+                                </label>
                               </div>
                             </div>
                           </div>
@@ -1083,8 +1235,9 @@ export default function App() {
                 {/* Quick stats */}
                 <aside className="bg-white rounded-lg p-6 shadow-sm" style={{ maxHeight: 420, overflow: 'auto' }}>
                   <h3 className="font-semibold mb-3">Quick Stats</h3>
-                  <div className="text-sm text-gray-500">Candidates: {responses.length}</div>
-                  <div className="text-sm text-gray-500">Active Jobs: {openings.length}</div>
+                  <div className="text-sm text-gray-500">Candidates (active): {responses.filter(r => !r.is_deleted).length}</div>
+                  <div className="text-sm text-gray-500">Active Jobs: {openings.filter(o => !o.is_deleted).length}</div>
+                  <div className="text-sm text-gray-500">Disabled Jobs: {openings.filter(o => o.is_deleted).length}</div>
                   <div className="text-sm text-gray-500">Talent Pools: 10</div>
                   <div className="text-sm text-gray-500">Members: 3</div>
                 </aside>
@@ -1093,7 +1246,7 @@ export default function App() {
                 <div className="bg-white rounded-lg p-6 shadow-sm flex flex-col" style={{ maxHeight: 420 }}>
                   <div className="flex justify-between items-center mb-4">
                     <h3 className="font-semibold">Recent Responses</h3>
-                    <div className="text-sm opacity-60">{responses.length} responses</div>
+                    <div className="text-sm opacity-60">{responses.filter(r => !r.is_deleted).length} active responses</div>
                   </div>
 
                   <div className="overflow-auto" style={{ flex: 1, minHeight: 0 }}>
@@ -1107,7 +1260,7 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y">
-                        {responses.map(r => {
+                        {responses.filter(r => !r.is_deleted).map(r => {
                           const name = extractCandidateName(r) || r.id;
                           return (
                             <tr key={r.id}>
@@ -1140,7 +1293,13 @@ export default function App() {
         {activeTab === "jobs" && (
           <>
             <header className="flex items-center justify-between mb-6">
-              <h1 className="text-2xl font-semibold">Jobs</h1>
+              <div>
+                <h1 className="text-2xl font-semibold">Jobs</h1>
+                <div className="mt-2 flex items-center gap-3 text-sm">
+                  <button onClick={() => setJobsSubtab('active')} className={`px-3 py-1 rounded ${jobsSubtab === 'active' ? 'bg-gray-800 text-white' : 'bg-white border'}`}>Active</button>
+                  <button onClick={() => setJobsSubtab('disabled')} className={`px-3 py-1 rounded ${jobsSubtab === 'disabled' ? 'bg-gray-800 text-white' : 'bg-white border'}`}>Disabled</button>
+                </div>
+              </div>
               <button onClick={openCreate} className="bg-blue-600 text-white px-4 py-2 rounded inline-flex items-center gap-2">{<Icon name="plus" />} New Opening</button>
             </header>
 
@@ -1156,7 +1315,7 @@ export default function App() {
                     />
                     <div className="text-xs text-gray-400 mt-2">Search filters job title, department or location.</div>
                   </div>
-                  <h2 className="font-semibold mb-0">Openings</h2>
+                  <h2 className="font-semibold mb-0">Openings ({jobsSubtab === 'active' ? 'Active' : 'Disabled'})</h2>
                 </div>
 
                 <div className="p-6 overflow-auto" style={{ flex: 1, minHeight: 0 }}>
@@ -1164,7 +1323,7 @@ export default function App() {
                     {filteredOpeningsForJobs.length === 0 && <div className="text-sm text-gray-500">No openings match the selected filters or search.</div>}
 
                     {filteredOpeningsForJobs.map(op => (
-                      <div key={op.id} className="p-4 rounded-lg border flex justify-between items-center">
+                      <div key={op.id} className={`p-4 rounded-lg border flex justify-between items-center ${op.is_deleted ? 'opacity-60 bg-red-50' : ''}`}>
                         <div>
                           <div className="font-semibold">{op.title}</div>
                           <div className="text-sm text-gray-500">{op.department} • {op.location}</div>
@@ -1172,6 +1331,14 @@ export default function App() {
                         <div className="flex items-center gap-3">
                           <button onClick={() => handleEditOpeningOpen(op)} className="px-3 py-1 border rounded">Edit</button>
                           <button onClick={() => openFormModal(op.id)} className="px-3 py-1 bg-blue-600 text-white rounded">Form Editor</button>
+                          <label className="inline-flex items-center gap-2">
+                            <input type="checkbox" checked={!op.is_deleted} onChange={(e) => {
+                              const toDeleted = !e.target.checked;
+                              if (toDeleted) requestDisableOpening(op.id);
+                              else toggleOpeningDeleted(op.id, false);
+                            }} />
+                            <span className="text-xs">{op.is_deleted ? 'Disabled' : 'Active'}</span>
+                          </label>
                           <button onClick={() => handleDeleteOpening(op.id)} className="text-red-600 flex items-center gap-1"><Icon name="trash" /> Delete</button>
                         </div>
                       </div>
@@ -1213,7 +1380,15 @@ export default function App() {
 
         {activeTab === "hiring" && (
           <>
-            <h1 className="text-2xl font-semibold mb-6">Hiring</h1>
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h1 className="text-2xl font-semibold">Hiring</h1>
+                <div className="mt-2 flex items-center gap-3 text-sm">
+                  <button onClick={() => setHiringSubtab('active')} className={`px-3 py-1 rounded ${hiringSubtab === 'active' ? 'bg-gray-800 text-white' : 'bg-white border'}`}>Active</button>
+                  <button onClick={() => setHiringSubtab('disabled')} className={`px-3 py-1 rounded ${hiringSubtab === 'disabled' ? 'bg-gray-800 text-white' : 'bg-white border'}`}>Disabled</button>
+                </div>
+              </div>
+            </div>
 
             <div className="grid grid-cols-3 gap-6 h-[calc(100vh-6rem)] min-h-0">
               <div className="col-span-2 bg-white rounded-lg shadow-sm flex flex-col min-h-0">
@@ -1227,7 +1402,7 @@ export default function App() {
                     />
                     <div className="text-xs text-gray-400 mt-2">Search searches name, email, college, opening title, source and response id.</div>
                   </div>
-                  <h2 className="font-semibold mb-0">Candidates</h2>
+                  <h2 className="font-semibold mb-0">Candidates ({hiringSubtab === 'active' ? 'Active' : 'Disabled'})</h2>
                 </div>
 
                 <div className="p-6 overflow-auto" style={{ flex: 1, minHeight: 0 }}>
@@ -1240,7 +1415,7 @@ export default function App() {
                       const candidateEmail = (resp.email || (resp.answers && resp.answers.email) || '').trim();
                       const candidateCollege = extractCandidateCollege(resp);
                       return (
-                        <div key={resp.id} className="p-6 border rounded relative bg-white min-h-[130px]">
+                        <div key={resp.id} className={`p-6 border rounded relative bg-white min-h-[130px] ${resp.is_deleted ? 'opacity-60 bg-red-50' : ''}`}>
                           <div className="flex justify-between items-start">
                             <div style={{ minWidth: 0, maxWidth: 'calc(100% - 220px)' }}>
                               <div className="font-semibold text-xl leading-tight break-words">{candidateName}</div>
@@ -1278,6 +1453,16 @@ export default function App() {
                                 <option>Hired</option>
                                 <option>Rejected</option>
                               </select>
+
+                              <div className="mt-3 text-xs">
+                                <label className="inline-flex items-center gap-2">
+                                  <input type="checkbox" checked={!resp.is_deleted} onChange={(e) => {
+                                    const toDeleted = !e.target.checked;
+                                    toggleResponseDeleted(resp.id, toDeleted);
+                                  }} />
+                                  <span className="text-xs">{resp.is_deleted ? 'Disabled' : 'Active'}</span>
+                                </label>
+                              </div>
                             </div>
                           </div>
 
@@ -1394,6 +1579,13 @@ export default function App() {
                 </div>
               </div>
 
+              <div className="flex items-center gap-3">
+                <label className="inline-flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={!newOpening.is_deleted} onChange={(e) => setNewOpening(s => ({ ...s, is_deleted: !e.target.checked }))} />
+                  Active
+                </label>
+              </div>
+
               <div className="flex justify-end gap-2">
                 <button type="button" onClick={() => setShowCreate(false)} className="px-4 py-2">Cancel</button>
                 <button type="submit" disabled={creating} className="px-4 py-2 bg-blue-600 text-white rounded">{creating ? "Creating..." : "Create Opening"}</button>
@@ -1444,6 +1636,18 @@ export default function App() {
                 </div>
               </div>
 
+              <div className="flex items-center gap-3">
+                <label className="inline-flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={!editingOpening.is_deleted} onChange={(e) => {
+                    const toDeleted = !e.target.checked;
+                    // Propagate immediately on toggle in edit modal too
+                    toggleOpeningDeleted(editingOpening.id, toDeleted);
+                    setEditingOpening(s => ({ ...s, is_deleted: !!toDeleted }));
+                  }} />
+                  Active
+                </label>
+              </div>
+
               <div className="flex justify-end gap-2">
                 <button type="button" onClick={() => setShowEdit(false)} className="px-4 py-2">Cancel</button>
                 <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded">Save</button>
@@ -1456,7 +1660,7 @@ export default function App() {
       {/* FORM EDITOR MODAL (per opening) */}
       {showFormModal && formModalOpeningId && (() => {
         const op = openings.find(o => o.id === formModalOpeningId) || { id: formModalOpeningId, title: 'Opening' };
-        const formObj = forms[formModalOpeningId] || ensureCoreFieldsInForm({ questions: templateQuestions.map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } });
+        const formObj = forms[formModalOpeningId] || ensureCoreFieldsInForm({ questions: templateQuestions.map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id }, is_deleted: !!(forms[formModalOpeningId]?.meta?.is_deleted) } });
 
         // header height (used for sticky offsets). Match with classes below if you change sizes.
         const headerHeight = 74; // px
@@ -1475,7 +1679,6 @@ export default function App() {
                     <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">+Add</button>
                     <button onClick={() => handleSaveForm(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">Save</button>
                     <button onClick={() => handlePublishForm(op.id)} className="px-3 py-2 bg-green-600 text-white rounded">Publish</button>
-                {/* <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-2 border rounded text-red-600 bg-white hover:shadow">Delete</button> */}
                     <button onClick={() => closeFormModal()} className="px-3 py-2 border rounded bg-white hover:shadow">Close</button>
                   </div>
                 </div>
@@ -1619,7 +1822,7 @@ export default function App() {
 
                     <div className="mt-4">
                       <div className="text-xs font-semibold">Live response count</div>
-                      <div className="text-lg font-medium mt-1">{responses.filter(r => r.openingId === op.id).length}</div>
+                      <div className="text-lg font-medium mt-1">{responses.filter(r => r.openingId === op.id && !r.is_deleted).length}</div>
                     </div>
                   </div>
                 </div>
@@ -1762,6 +1965,24 @@ export default function App() {
                 <div className="mt-4"><button onClick={() => setPublicView(null)} className="px-4 py-2 bg-blue-600 text-white rounded">Close</button></div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Confirm disable opening modal */}
+      {confirmDisableOpeningId && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-60">
+          <div className="bg-white rounded-lg p-6 w-[560px] shadow-xl">
+            <h3 className="text-lg font-semibold mb-3">Disable Opening?</h3>
+            <div className="text-sm text-gray-700">
+              Disabling <strong>{confirmDisableOpeningName}</strong> will immediately hide the form and mark all responses for this opening as disabled.
+              Are you sure you want to proceed?
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button onClick={cancelDisableOpening} className="px-4 py-2 border rounded">Cancel</button>
+              <button onClick={confirmDisableOpening} className="px-4 py-2 bg-red-600 text-white rounded">Yes, disable</button>
+            </div>
           </div>
         </div>
       )}
