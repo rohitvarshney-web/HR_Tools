@@ -27,7 +27,7 @@ const CORE_QUESTIONS = {
   email: { id: "q_email", type: "email", label: "Email address", required: true },
   phone: { id: "q_phone", type: "short_text", label: "Phone number", required: true },
   resume: { id: "q_resume", type: "file", label: "Upload resume / CV", required: true },
-  college: { id: "q_college", type: "short_text", label: "College / Company", required: true },
+  college: { id: "q_college", type: "short_text", label: "College / Organization", required: true }, // <-- changed label
 };
 const PROTECTED_IDS = new Set(Object.values(CORE_QUESTIONS).map(q => q.id));
 
@@ -1392,18 +1392,15 @@ export default function App() {
                           onDragOver={(e) => e.preventDefault()}
                           className="p-3 border rounded bg-white flex flex-col gap-2"
                         >
-                          {/* Top row: Label + (type for non-protected at top-right) */}
+                          {/* Top row: Label + (placeholder to keep layout consistent) */}
                           <div className="flex items-start justify-between">
                             <div className="text-sm font-medium leading-tight">
                               {q.required ? <span className="text-red-500 mr-2">*</span> : null}
                               <span className="whitespace-normal">{q.label}</span>
                             </div>
 
-                            {!PROTECTED_IDS.has(q.id) ? (
-                              <div className="text-xs text-gray-400 ml-4">{q.type}</div>
-                            ) : (
-                              <div /> /* empty placeholder so layout stays consistent */
-                            )}
+                            {/* removed type from top-right for consistency; keep empty placeholder to preserve layout */}
+                            <div />
                           </div>
 
                           {/* Middle row: optional validation summary */}
@@ -1413,7 +1410,7 @@ export default function App() {
                             ) : null}
                           </div>
 
-                          {/* Bottom row: left = protected lock + type (if protected), right = controls */}
+                          {/* Bottom row: left = protected lock + type (or just type for non-protected), right = controls */}
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2 text-xs text-gray-500">
                               {PROTECTED_IDS.has(q.id) ? (
@@ -1422,12 +1419,24 @@ export default function App() {
                                   <div className="text-xs text-gray-400">{q.type}</div>
                                 </>
                               ) : (
-                                <div /> /* nothing to show in bottom-left for non-protected */
+                                // For non-protected, show the data type in the same spot (consistent with protected)
+                                <div className="text-xs text-gray-400">{q.type}</div>
                               )}
                             </div>
 
                             <div className="flex items-center gap-3">
-                              {!PROTECTED_IDS.has(q.id) ? <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500 text-sm">Remove</button> : <div className="text-xs text-gray-400"></div>}
+                              {!PROTECTED_IDS.has(q.id) ? (
+                                <button
+                                  onClick={() => removeQuestion(op.id, q.id)}
+                                  className="text-red-500 p-1 rounded hover:bg-red-50"
+                                  aria-label="Remove question"
+                                  title="Remove question"
+                                >
+                                  <Icon name="trash" className="w-5 h-5" />
+                                </button>
+                              ) : (
+                                <div className="text-xs text-gray-400"></div>
+                              )}
                               <label className="flex items-center gap-2 text-xs text-gray-500">
                                 <input type="checkbox" checked={!!q.pageBreak} onChange={() => togglePageBreak(op.id, q.id)} />
                                 Page Break
