@@ -1025,7 +1025,7 @@ export default function App() {
       <aside className="w-64 bg-gray-900 text-gray-100 p-6 flex flex-col justify-between h-screen sticky top-0">
         <div>
           <div className="flex items-center gap-3 mb-6">
-            <div className="w-24 h-16 rounded-full bg-blue-600 flex items-center justify-center font-bold">Hi there!</div>
+            <div className="w-24 h-16 rounded-full bg-blue-600 flex items-center justify-center font-bold">Hi!</div>
             <div>
               <div className="text-sm font-semibold">{user.name}</div>
               {user ? (
@@ -1483,7 +1483,7 @@ export default function App() {
                     <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">+Add</button>
                     <button onClick={() => handleSaveForm(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">Save</button>
                     <button onClick={() => handlePublishForm(op.id)} className="px-3 py-2 bg-green-600 text-white rounded">Publish</button>
-                    <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-2 border rounded text-red-600 bg-white hover:shadow">Delete</button>
+                {/* <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-2 border rounded text-red-600 bg-white hover:shadow">Delete</button> */}
                     <button onClick={() => closeFormModal()} className="px-3 py-2 border rounded bg-white hover:shadow">Close</button>
                   </div>
                 </div>
@@ -1622,7 +1622,7 @@ export default function App() {
                         </div>
                       </div>
                     ) : (
-                      <div className="text-sm text-gray-500 pb-6">Form not yet published. Click Publish to generate shareable links per source.</div>
+                      <div className="text-sm text-gray-500 pb-6">Form not yet published. Click Publish to generate shareable link.</div>
                     )}
 
                     <div className="mt-4">
