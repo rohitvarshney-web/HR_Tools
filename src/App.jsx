@@ -1025,7 +1025,7 @@ export default function App() {
       <aside className="w-64 bg-gray-900 text-gray-100 p-6 flex flex-col justify-between h-screen sticky top-0">
         <div>
           <div className="flex items-center gap-3 mb-6">
-            <div className="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center font-bold">"{user.initials}"</div>
+            <div className="w-24 h-16 rounded-full bg-blue-600 flex items-center justify-center font-bold">{user.initials}</div>
             <div>
               <div className="text-sm font-semibold">{user.name}</div>
               {user ? (
