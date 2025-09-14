@@ -15,6 +15,10 @@ const Icon = ({ name, className = "w-5 h-5 inline-block" }) => {
   return icons[name] || null;
 };
 
+const LockIcon = ({ className = "w-4 h-4 inline-block text-gray-500" }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V8a5 5 0 0110 0v3"/></svg>
+);
+
 /* -------------------------
    Protected core questions (stable IDs)
    ------------------------- */
@@ -1298,8 +1302,8 @@ export default function App() {
         return (
           <div key={"formmodal_" + formModalOpeningId} className="fixed inset-0 bg-black/40 flex items-start justify-center z-50 pt-6">
             <div className="bg-white rounded-lg shadow-xl w-[920px] max-h-[86vh] overflow-hidden">
-              {/* Sticky Header */}
-              <div className="w-full sticky top-0 z-30 bg-white border-b" style={{ height: headerHeight }}>
+              {/* Sticky Header - removed border line, subtle shadow */}
+              <div className="w-full sticky top-0 z-30 bg-white" style={{ height: headerHeight, boxShadow: '0 1px 0 rgba(0,0,0,0.04)' }}>
                 <div className="flex items-center justify-between p-4">
                   <div>
                     <h3 className="text-lg font-semibold mb-1">Form Editor — {op.title}</h3>
@@ -1319,7 +1323,7 @@ export default function App() {
               <div className="grid grid-cols-3 gap-6 p-4" style={{ height: `calc(86vh - ${headerHeight}px)` }}>
                 {/* Column 1: Question Bank */}
                 <div className="flex flex-col">
-                  <div className="sticky" style={{ top: headerHeight - 6, zIndex: 20 }}>
+                  <div className="sticky" style={{ top: headerHeight - 6, zIndex: 20, background: 'white' }}>
                     <h3 className="font-semibold mb-2">Question Bank</h3>
                   </div>
                   <div className="overflow-auto pr-2" style={{ maxHeight: `calc(86vh - ${headerHeight + 48}px)` }}>
@@ -1347,7 +1351,7 @@ export default function App() {
 
                 {/* Column 2: Form Questions */}
                 <div className="flex flex-col">
-                  <div className="sticky" style={{ top: headerHeight - 6, zIndex: 20 }}>
+                  <div className="sticky" style={{ top: headerHeight - 6, zIndex: 20, background: 'white' }}>
                     <h3 className="font-semibold mb-2">Form Questions</h3>
                   </div>
 
@@ -1360,29 +1364,49 @@ export default function App() {
                           onDragStart={(e) => e.dataTransfer.setData('from', idx)}
                           onDrop={(e) => { const from = parseInt(e.dataTransfer.getData('from')); onDrag(op.id, from, idx); }}
                           onDragOver={(e) => e.preventDefault()}
-                          className="p-3 border rounded bg-white flex justify-between items-start"
+                          className="p-3 border rounded bg-white flex flex-col gap-2"
                         >
-                          <div style={{ minWidth: 0 }}>
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="text-sm font-medium truncate">{q.label}{PROTECTED_IDS.has(q.id) ? ' (mandatory)' : ''}</div>
-                              <div className="text-xs text-gray-400">{q.type}</div>
+                          {/* Top row: Label + (type for non-protected at top-right) */}
+                          <div className="flex items-start justify-between">
+                            <div className="text-sm font-medium leading-tight">
+                              {q.required ? <span className="text-red-500 mr-2">*</span> : null}
+                              <span className="whitespace-normal">{q.label}</span>
                             </div>
 
-                            <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
-                              <div>{q.required ? 'Required' : 'Optional'}</div>
-                              {q.validation && Object.keys(q.validation).length ? (
-                                <div className="text-xs text-gray-400">• {Object.entries(q.validation).map(([k,v]) => `${k}=${v}`).join(', ')}</div>
-                              ) : null}
-                            </div>
+                            {!PROTECTED_IDS.has(q.id) ? (
+                              <div className="text-xs text-gray-400 ml-4">{q.type}</div>
+                            ) : (
+                              <div /> /* empty placeholder so layout stays consistent */
+                            )}
                           </div>
 
-                          <div className="flex flex-col items-end gap-3">
-                            <div className="flex gap-2">
-                              {!PROTECTED_IDS.has(q.id) ? <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500 text-sm">Remove</button> : <div className="text-xs text-gray-400">Protected</div>}
-                            </div>
+                          {/* Middle row: optional validation summary */}
+                          <div className="text-xs text-gray-500">
+                            {q.required ? 'Required' : 'Optional'}
+                            {q.validation && Object.keys(q.validation).length ? (
+                              <span className="ml-3 text-gray-400">• {Object.entries(q.validation).map(([k,v]) => `${k}=${v}`).join(', ')}</span>
+                            ) : null}
+                          </div>
+
+                          {/* Bottom row: left = protected lock + type (if protected), right = controls */}
+                          <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2 text-xs text-gray-500">
-                              <label className="text-xs">Page break after</label>
-                              <input type="checkbox" checked={!!q.pageBreak} onChange={() => togglePageBreak(op.id, q.id)} />
+                              {PROTECTED_IDS.has(q.id) ? (
+                                <>
+                                  <LockIcon className="w-4 h-4 text-gray-400" />
+                                  <div className="text-xs text-gray-400">{q.type}</div>
+                                </>
+                              ) : (
+                                <div /> /* nothing to show in bottom-left for non-protected */
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-3">
+                              {!PROTECTED_IDS.has(q.id) ? <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500 text-sm">Remove</button> : <div className="text-xs text-gray-400">Protected</div>}
+                              <label className="flex items-center gap-2 text-xs text-gray-500">
+                                <input type="checkbox" checked={!!q.pageBreak} onChange={() => togglePageBreak(op.id, q.id)} />
+                                Page break after
+                              </label>
                             </div>
                           </div>
                         </li>
@@ -1393,7 +1417,7 @@ export default function App() {
 
                 {/* Column 3: Preview & Share */}
                 <div className="flex flex-col">
-                  <div className="sticky" style={{ top: headerHeight - 6, zIndex: 20 }}>
+                  <div className="sticky" style={{ top: headerHeight - 6, zIndex: 20, background: 'white' }}>
                     <h3 className="font-semibold mb-2">Preview & Share</h3>
                   </div>
 
@@ -1615,7 +1639,8 @@ function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, total
           ) : q.type === "email" ? (
             <input name={q.id} type="email" required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
           ) : q.id === CORE_QUESTIONS.phone.id || q.label.toLowerCase().includes("phone") ? (
-            <input name={q.id} type="tel" required={q.required} pattern="\d*" className="w-full border p-2 rounded-md" />
+            // stronger input constraints for phone field in UI (also validated server-side in handlePublicSubmit)
+            <input name={q.id} type="tel" required={q.required} pattern="^\d{7,15}$" inputMode="numeric" title="Enter 7 to 15 digits" className="w-full border p-2 rounded-md" />
           ) : (
             <input name={q.id} required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
           )}
