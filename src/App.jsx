@@ -27,7 +27,6 @@ const CORE_QUESTIONS = {
   email: { id: "q_email", type: "email", label: "Email address", required: true },
   phone: { id: "q_phone", type: "short_text", label: "Phone number", required: true },
   resume: { id: "q_resume", type: "file", label: "Upload resume / CV", required: true },
-  // updated label per request
   college: { id: "q_college", type: "short_text", label: "College / Organization", required: true },
 };
 const PROTECTED_IDS = new Set(Object.values(CORE_QUESTIONS).map(q => q.id));
@@ -263,19 +262,26 @@ export default function App() {
      Helper: ensure core fields exist in a form object
   ------------------------- */
   function ensureCoreFieldsInForm(formObj) {
+    // Avoid mutating the original object unexpectedly
+    formObj = { ...(formObj || {}) };
+    formObj.questions = (formObj.questions || []).map(q => ({ ...q }));
+
     const existingIds = new Set((formObj.questions || []).map(q => q.id));
     // always inject core fields at start in this defined order
     const coreOrder = [CORE_QUESTIONS.fullName, CORE_QUESTIONS.email, CORE_QUESTIONS.phone, CORE_QUESTIONS.resume, CORE_QUESTIONS.college];
+    // Only add the ones missing
     const missing = coreOrder.filter(cq => !existingIds.has(cq.id)).map(cq => ({ ...cq }));
     if (missing.length) {
       formObj.questions = [...missing, ...(formObj.questions || [])];
     }
+
     formObj.questions = (formObj.questions || []).map(q => {
       if (PROTECTED_IDS.has(q.id)) {
         return { ...q, required: true, validation: q.validation || {}, pageBreak: q.pageBreak || false };
       }
       return { ...q, validation: q.validation || {}, pageBreak: q.pageBreak || false };
     });
+
     formObj.meta = formObj.meta || {};
     formObj.meta.coreFields = formObj.meta.coreFields || {
       fullNameId: CORE_QUESTIONS.fullName.id,
@@ -697,17 +703,23 @@ export default function App() {
     // if all validations passed — build FormData and submit
     const fd = new FormData();
 
-    // We'll avoid sending core question IDs to prevent duplicates on the server.
-    // We'll instead append canonical top-level fields (fullName, email, phone, college)
-    // and ensure the resume file is appended under 'resume' (and compatibility names).
-    const core = formObj.meta?.coreFields || {};
-    const coreIds = new Set([core.fullNameId, core.emailId, core.phoneId, core.resumeId, core.collegeId]);
+    // Important: Avoid sending duplicates for core fields.
+    // We'll skip appending the core question ids when building the general answers part,
+    // and append canonical top-level core fields exactly once below.
+    const coreMeta = formObj.meta?.coreFields || {};
+    const coreIdsSet = new Set([
+      coreMeta.fullNameId || CORE_QUESTIONS.fullName.id,
+      coreMeta.emailId || CORE_QUESTIONS.email.id,
+      coreMeta.phoneId || CORE_QUESTIONS.phone.id,
+      coreMeta.resumeId || CORE_QUESTIONS.resume.id,
+      coreMeta.collegeId || CORE_QUESTIONS.college.id
+    ]);
 
-    // Add non-core answers and files
+    // Append non-core answers and files (skip the core question ids)
     for (const [k, v] of Object.entries(values)) {
       if (v === null || v === undefined) continue;
-      // skip appending core question ids entirely — they'll be sent as top-level fields instead
-      if (coreIds.has(k)) {
+      if (coreIdsSet.has(k)) {
+        // skip core questions here — we'll append canonical core fields below to avoid duplicates
         continue;
       }
 
@@ -720,27 +732,24 @@ export default function App() {
       }
     }
 
-    // Append resume file (if present) under canonical keys — we skipped core ids above
+    // Append resume file (if present) under canonical key(s).
     try {
-      const resumeFile = values[core.resumeId] || values[CORE_QUESTIONS.resume.id];
+      const resumeFile = values[coreMeta.resumeId] || values[CORE_QUESTIONS.resume.id];
       if (resumeFile instanceof File) {
-        // primary key
         fd.append('resume', resumeFile, resumeFile.name);
-        // additional names for compatibility (server-side may expect any of these)
-        try { fd.append('resumeFile', resumeFile, resumeFile.name); } catch (err) {}
-        try { fd.append('cv', resumeFile, resumeFile.name); } catch (err) {}
+        try { fd.append('resumeFile', resumeFile, resumeFile.name); } catch (e) { /* ignore double-append errors */ }
+        try { fd.append('cv', resumeFile, resumeFile.name); } catch (e) { /* ignore */ }
       }
     } catch (err) {
-      // swallow
+      // not critical
     }
 
-    // Also append top-level core text fields so backend receives them as first-class fields
-    // (so they can be saved into the top-level response properties and Google Sheet columns)
+    // Append canonical top-level text fields exactly once
     try {
-      const fullnameVal = values[core.fullNameId] || values[CORE_QUESTIONS.fullName.id] || "";
-      const emailVal = values[core.emailId] || values[CORE_QUESTIONS.email.id] || "";
-      const phoneVal = values[core.phoneId] || values[CORE_QUESTIONS.phone.id] || "";
-      const collegeVal = values[core.collegeId] || values[CORE_QUESTIONS.college.id] || "";
+      const fullnameVal = values[coreMeta.fullNameId] || values[CORE_QUESTIONS.fullName.id] || "";
+      const emailVal = values[coreMeta.emailId] || values[CORE_QUESTIONS.email.id] || "";
+      const phoneVal = values[coreMeta.phoneId] || values[CORE_QUESTIONS.phone.id] || "";
+      const collegeVal = values[coreMeta.collegeId] || values[CORE_QUESTIONS.college.id] || "";
 
       if (fullnameVal) fd.append('fullName', fullnameVal);
       if (emailVal) fd.append('email', emailVal);
@@ -988,7 +997,7 @@ export default function App() {
           <nav className="space-y-2">
             <div onClick={() => setActiveTab("overview")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'overview' ? 'bg-gray-800' : ''}`}>{<Icon name="menu" />} Overview</div>
             <div onClick={() => setActiveTab("jobs")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'jobs' ? 'bg-gray-800' : ''}`}>Jobs</div>
-            <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg.gray-800' : ''}`}>Hiring</div>
+            <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg-gray-800' : ''}`}>Hiring</div>
           </nav>
         </div>
       </aside>
@@ -1652,10 +1661,6 @@ export default function App() {
 
 /* -------------------------
    PageRenderer component for public form pagination
-   - receives pageQuestions: array of questions for current page
-   - allSchema: entire schema (used for validation on submit)
-   - pageIndex, totalPages, onBack, onNext
-   - this renders inputs and the appropriate buttons (Back/Next/Submit Form)
   ------------------------- */
 function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, totalPages = 1, onBack = () => {}, onNext = () => {}, isLastPage = true }) {
   // We purposely don't manage component-level form state here -- the parent form submission
