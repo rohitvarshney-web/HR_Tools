@@ -27,6 +27,7 @@ const CORE_QUESTIONS = {
   email: { id: "q_email", type: "email", label: "Email address", required: true },
   phone: { id: "q_phone", type: "short_text", label: "Phone number", required: true },
   resume: { id: "q_resume", type: "file", label: "Upload resume / CV", required: true },
+  // updated label per request
   college: { id: "q_college", type: "short_text", label: "College / Organization", required: true },
 };
 const PROTECTED_IDS = new Set(Object.values(CORE_QUESTIONS).map(q => q.id));
@@ -195,6 +196,11 @@ export default function App() {
   const [filterSources, setFilterSources] = useState([]);
   const [filterStatus, setFilterStatus] = useState([]);
 
+  // Jobs tab search & filters (new)
+  const [jobsSearch, setJobsSearch] = useState("");
+  const [jobsFilterLocations, setJobsFilterLocations] = useState([]);
+  const [jobsFilterDepartments, setJobsFilterDepartments] = useState([]);
+
   // Search query for candidate list (search across name, email, college, opening title, source, response id)
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -260,28 +266,39 @@ export default function App() {
 
   /* -------------------------
      Helper: ensure core fields exist in a form object
+     - also dedupe non-core questions that look like core (particularly college) to avoid duplicates
   ------------------------- */
+  function looksLikeCollegeLabel(label = "") {
+    if (!label) return false;
+    const s = label.toLowerCase();
+    return s.includes("college") || s.includes("organisation") || s.includes("organization") || s.includes("institute");
+  }
+
   function ensureCoreFieldsInForm(formObj) {
-    // Avoid mutating the original object unexpectedly
-    formObj = { ...(formObj || {}) };
-    formObj.questions = (formObj.questions || []).map(q => ({ ...q }));
+    formObj = formObj || { questions: [], meta: {} };
+    // Deduplicate: remove non-core questions that look like core college label to avoid duplicates
+    formObj.questions = (formObj.questions || []).filter(q => {
+      if (!q) return false;
+      // If this question is the protected college id, keep it.
+      if (q.id === CORE_QUESTIONS.college.id) return true;
+      // If its label strongly looks like college/organization, drop it (we'll use protected one).
+      if (looksLikeCollegeLabel(q.label)) return false;
+      return true;
+    });
 
     const existingIds = new Set((formObj.questions || []).map(q => q.id));
     // always inject core fields at start in this defined order
     const coreOrder = [CORE_QUESTIONS.fullName, CORE_QUESTIONS.email, CORE_QUESTIONS.phone, CORE_QUESTIONS.resume, CORE_QUESTIONS.college];
-    // Only add the ones missing
     const missing = coreOrder.filter(cq => !existingIds.has(cq.id)).map(cq => ({ ...cq }));
     if (missing.length) {
       formObj.questions = [...missing, ...(formObj.questions || [])];
     }
-
     formObj.questions = (formObj.questions || []).map(q => {
       if (PROTECTED_IDS.has(q.id)) {
         return { ...q, required: true, validation: q.validation || {}, pageBreak: q.pageBreak || false };
       }
       return { ...q, validation: q.validation || {}, pageBreak: q.pageBreak || false };
     });
-
     formObj.meta = formObj.meta || {};
     formObj.meta.coreFields = formObj.meta.coreFields || {
       fullNameId: CORE_QUESTIONS.fullName.id,
@@ -318,7 +335,16 @@ export default function App() {
       const allForms = await apiFetch('/api/forms');
       const map = {};
       (allForms || []).forEach(f => {
-        const obj = { questions: (f.data && f.data.questions) || [], meta: (f.data && f.data.meta) || null, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at, openingId: f.openingId };
+        // normalize/cleanup any college-like duplicates that may have been saved with custom ids/labels
+        let questions = (f.data && f.data.questions) || [];
+        // remove any non-core college-like entries
+        questions = questions.filter(q => {
+          if (!q) return false;
+          if (q.id === CORE_QUESTIONS.college.id) return true;
+          if (looksLikeCollegeLabel(q.label)) return false;
+          return true;
+        });
+        const obj = { questions, meta: (f.data && f.data.meta) || null, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at, openingId: f.openingId };
         map[f.openingId] = ensureCoreFieldsInForm(obj);
       });
       (openings || []).forEach(op => {
@@ -414,6 +440,8 @@ export default function App() {
       const exists = (existing.questions || []).some(x => x.id === question.id);
       if (exists) return f;
       if (PROTECTED_IDS.has(question.id)) return { ...f };
+      // avoid adding a non-core question that looks like college
+      if (looksLikeCollegeLabel(question.label)) return f;
       const newQuestions = [...(existing.questions || []), question];
       return { ...f, [openingId]: { ...existing, questions: newQuestions } };
     });
@@ -703,28 +731,24 @@ export default function App() {
     // if all validations passed — build FormData and submit
     const fd = new FormData();
 
-    // Important: Avoid sending duplicates for core fields.
-    // We'll skip appending the core question ids when building the general answers part,
-    // and append canonical top-level core fields exactly once below.
-    const coreMeta = formObj.meta?.coreFields || {};
-    const coreIdsSet = new Set([
-      coreMeta.fullNameId || CORE_QUESTIONS.fullName.id,
-      coreMeta.emailId || CORE_QUESTIONS.email.id,
-      coreMeta.phoneId || CORE_QUESTIONS.phone.id,
-      coreMeta.resumeId || CORE_QUESTIONS.resume.id,
-      coreMeta.collegeId || CORE_QUESTIONS.college.id
-    ]);
-
-    // Append non-core answers and files (skip the core question ids)
+    // Add answers and files
     for (const [k, v] of Object.entries(values)) {
       if (v === null || v === undefined) continue;
-      if (coreIdsSet.has(k)) {
-        // skip core questions here — we'll append canonical core fields below to avoid duplicates
-        continue;
-      }
-
       if (v instanceof File) {
+        // append under its question id
         fd.append(k, v, v.name);
+        // ALSO append under a stable key the server might expect (prevent Multer Unexpected field)
+        // If the file is the core resume field, append as 'resume' too
+        const lk = (k || "").toLowerCase();
+        if (k === CORE_QUESTIONS.resume.id || lk.includes('resume') || lk.includes('cv') || lk.includes('upload_resume')) {
+          try {
+            fd.append('resume', v, v.name);
+            fd.append('resumeFile', v, v.name);
+            fd.append('cv', v, v.name);
+          } catch (err) {
+            // some browsers may throw on double appends of the same File object in some environments - ignore
+          }
+        }
       } else if (Array.isArray(v)) {
         v.forEach(item => fd.append(k, item));
       } else {
@@ -732,24 +756,14 @@ export default function App() {
       }
     }
 
-    // Append resume file (if present) under canonical key(s).
+    // Also append top-level core fields so backend receives them as first-class fields
+    // (so they can be saved into the top-level response properties and Google Sheet columns)
     try {
-      const resumeFile = values[coreMeta.resumeId] || values[CORE_QUESTIONS.resume.id];
-      if (resumeFile instanceof File) {
-        fd.append('resume', resumeFile, resumeFile.name);
-        try { fd.append('resumeFile', resumeFile, resumeFile.name); } catch (e) { /* ignore double-append errors */ }
-        try { fd.append('cv', resumeFile, resumeFile.name); } catch (e) { /* ignore */ }
-      }
-    } catch (err) {
-      // not critical
-    }
-
-    // Append canonical top-level text fields exactly once
-    try {
-      const fullnameVal = values[coreMeta.fullNameId] || values[CORE_QUESTIONS.fullName.id] || "";
-      const emailVal = values[coreMeta.emailId] || values[CORE_QUESTIONS.email.id] || "";
-      const phoneVal = values[coreMeta.phoneId] || values[CORE_QUESTIONS.phone.id] || "";
-      const collegeVal = values[coreMeta.collegeId] || values[CORE_QUESTIONS.college.id] || "";
+      const core = formObj.meta?.coreFields || {};
+      const fullnameVal = values[core.fullNameId] || values[CORE_QUESTIONS.fullName.id] || "";
+      const emailVal = values[core.emailId] || values[CORE_QUESTIONS.email.id] || "";
+      const phoneVal = values[core.phoneId] || values[CORE_QUESTIONS.phone.id] || "";
+      const collegeVal = values[core.collegeId] || values[CORE_QUESTIONS.college.id] || "";
 
       if (fullnameVal) fd.append('fullName', fullnameVal);
       if (emailVal) fd.append('email', emailVal);
@@ -953,6 +967,24 @@ export default function App() {
   }, [responses, openings, filterOpenings, filterLocations, filterDepartments, filterSources, filterStatus, searchQuery]);
 
   /* -------------------------
+     Jobs tab filtered openings
+  ------------------------- */
+  const filteredOpeningsForJobs = useMemo(() => {
+    const q = (jobsSearch || "").toLowerCase().trim();
+    return openings.filter(op => {
+      if (jobsFilterLocations.length > 0 && !jobsFilterLocations.includes(op.location || "")) return false;
+      if (jobsFilterDepartments.length > 0 && !jobsFilterDepartments.includes(op.department || "")) return false;
+      if (q) {
+        const title = (op.title || "").toLowerCase();
+        const dept = (op.department || "").toLowerCase();
+        const loc = (op.location || "").toLowerCase();
+        if (!(title.includes(q) || dept.includes(q) || loc.includes(q))) return false;
+      }
+      return true;
+    });
+  }, [openings, jobsSearch, jobsFilterLocations, jobsFilterDepartments]);
+
+  /* -------------------------
      Render gating
   ------------------------- */
   if (!authChecked) {
@@ -1078,20 +1110,61 @@ export default function App() {
               <button onClick={openCreate} className="bg-blue-600 text-white px-4 py-2 rounded inline-flex items-center gap-2">{<Icon name="plus" />} New Opening</button>
             </header>
 
-            <div className="space-y-4">
-              {openings.map(op => (
-                <div key={op.id} className="p-4 rounded-lg border flex justify-between items-center">
-                  <div>
-                    <div className="font-semibold">{op.title}</div>
-                    <div className="text-sm text-gray-500">{op.department} • {op.location}</div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <button onClick={() => handleEditOpeningOpen(op)} className="px-3 py-1 border rounded">Edit</button>
-                    <button onClick={() => openFormModal(op.id)} className="px-3 py-1 bg-blue-600 text-white rounded">Form Editor</button>
-                    <button onClick={() => handleDeleteOpening(op.id)} className="text-red-600 flex items-center gap-1"><Icon name="trash" /> Delete</button>
-                  </div>
+            <div className="grid grid-cols-3 gap-6">
+              <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
+                <div className="mb-4">
+                  <input
+                    value={jobsSearch}
+                    onChange={(e) => setJobsSearch(e.target.value)}
+                    placeholder="Search jobs by title, location, department..."
+                    className="w-full border p-3 rounded"
+                  />
+                  <div className="text-xs text-gray-400 mt-2">Search filters job title, department or location.</div>
                 </div>
-              ))}
+
+                <div className="space-y-4">
+                  {filteredOpeningsForJobs.length === 0 && <div className="text-sm text-gray-500">No openings match the selected filters or search.</div>}
+
+                  {filteredOpeningsForJobs.map(op => (
+                    <div key={op.id} className="p-4 rounded-lg border flex justify-between items-center">
+                      <div>
+                        <div className="font-semibold">{op.title}</div>
+                        <div className="text-sm text-gray-500">{op.department} • {op.location}</div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <button onClick={() => handleEditOpeningOpen(op)} className="px-3 py-1 border rounded">Edit</button>
+                        <button onClick={() => openFormModal(op.id)} className="px-3 py-1 bg-blue-600 text-white rounded">Form Editor</button>
+                        <button onClick={() => handleDeleteOpening(op.id)} className="text-red-600 flex items-center gap-1"><Icon name="trash" /> Delete</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Filters aside (same style as hiring) */}
+              <aside className="bg-white rounded-lg p-6 shadow-sm">
+                <h3 className="font-semibold mb-4">Filters</h3>
+
+                <div className="space-y-4">
+                  <MultiSelectDropdown
+                    label="Location"
+                    options={locationOptions}
+                    selected={jobsFilterLocations}
+                    onChange={setJobsFilterLocations}
+                    placeholder="All Location"
+                    searchEnabled={true}
+                  />
+
+                  <MultiSelectDropdown
+                    label="Department"
+                    options={departmentOptions}
+                    selected={jobsFilterDepartments}
+                    onChange={setJobsFilterDepartments}
+                    placeholder="All Department"
+                    searchEnabled={true}
+                  />
+                </div>
+              </aside>
             </div>
           </>
         )}
@@ -1451,7 +1524,7 @@ export default function App() {
                             </div>
 
                             <div className="flex items-center gap-3">
-                              {/* we removed textual 'Remove' button — deletion is handled by the icon on the left */}
+                              {/* deletion handled by the icon on the left */}
                               <label className="flex items-center gap-2 text-xs text-gray-500">
                                 <input type="checkbox" checked={!!q.pageBreak} onChange={() => togglePageBreak(op.id, q.id)} />
                                 Page Break
@@ -1661,6 +1734,10 @@ export default function App() {
 
 /* -------------------------
    PageRenderer component for public form pagination
+   - receives pageQuestions: array of questions for current page
+   - allSchema: entire schema (used for validation on submit)
+   - pageIndex, totalPages, onBack, onNext
+   - this renders inputs and the appropriate buttons (Back/Next/Submit Form)
   ------------------------- */
 function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, totalPages = 1, onBack = () => {}, onNext = () => {}, isLastPage = true }) {
   // We purposely don't manage component-level form state here -- the parent form submission
