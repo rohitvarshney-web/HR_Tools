@@ -27,7 +27,7 @@ const CORE_QUESTIONS = {
   email: { id: "q_email", type: "email", label: "Email address", required: true },
   phone: { id: "q_phone", type: "short_text", label: "Phone number", required: true },
   resume: { id: "q_resume", type: "file", label: "Upload resume / CV", required: true },
-  college: { id: "q_college", type: "short_text", label: "College / Institute", required: true },
+  college: { id: "q_college", type: "short_text", label: "College / Company", required: true },
 };
 const PROTECTED_IDS = new Set(Object.values(CORE_QUESTIONS).map(q => q.id));
 
@@ -1307,10 +1307,10 @@ export default function App() {
                 <div className="flex items-center justify-between p-4">
                   <div>
                     <h3 className="text-lg font-semibold mb-1">Form Editor — {op.title}</h3>
-                    <div className="text-xs text-gray-500">Edit questions, save, publish, or share links. Core fields are mandatory and cannot be removed.</div>
+                    <div className="text-xs text-gray-500">Edit questions, save, publish, or share links.</div>
                   </div>
                   <div className="flex items-center gap-3">
-                    <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">+ Add</button>
+                    <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">+Add</button>
                     <button onClick={() => handleSaveForm(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">Save</button>
                     <button onClick={() => handlePublishForm(op.id)} className="px-3 py-2 bg-green-600 text-white rounded">Publish</button>
                     <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-2 border rounded text-red-600 bg-white hover:shadow">Delete</button>
@@ -1402,7 +1402,7 @@ export default function App() {
                             </div>
 
                             <div className="flex items-center gap-3">
-                              {!PROTECTED_IDS.has(q.id) ? <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500 text-sm">Remove</button> : <div className="text-xs text-gray-400">Protected</div>}
+                              {!PROTECTED_IDS.has(q.id) ? <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500 text-sm">Remove</button> :}
                               <label className="flex items-center gap-2 text-xs text-gray-500">
                                 <input type="checkbox" checked={!!q.pageBreak} onChange={() => togglePageBreak(op.id, q.id)} />
                                 Page break after
