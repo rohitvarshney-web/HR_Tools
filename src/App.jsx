@@ -697,24 +697,22 @@ export default function App() {
     // if all validations passed — build FormData and submit
     const fd = new FormData();
 
-    // Add answers and files
+    // We'll avoid sending core question IDs to prevent duplicates on the server.
+    // We'll instead append canonical top-level fields (fullName, email, phone, college)
+    // and ensure the resume file is appended under 'resume' (and compatibility names).
+    const core = formObj.meta?.coreFields || {};
+    const coreIds = new Set([core.fullNameId, core.emailId, core.phoneId, core.resumeId, core.collegeId]);
+
+    // Add non-core answers and files
     for (const [k, v] of Object.entries(values)) {
       if (v === null || v === undefined) continue;
+      // skip appending core question ids entirely — they'll be sent as top-level fields instead
+      if (coreIds.has(k)) {
+        continue;
+      }
+
       if (v instanceof File) {
-        // append under its question id
         fd.append(k, v, v.name);
-        // ALSO append under a stable key the server might expect (prevent Multer Unexpected field)
-        // If the file is the core resume field, append as 'resume' too
-        const lk = (k || "").toLowerCase();
-        if (k === CORE_QUESTIONS.resume.id || lk.includes('resume') || lk.includes('cv') || lk.includes('upload_resume')) {
-          try {
-            fd.append('resume', v, v.name);
-            fd.append('resumeFile', v, v.name);
-            fd.append('cv', v, v.name);
-          } catch (err) {
-            // some browsers may throw on double appends of the same File object in some environments - ignore
-          }
-        }
       } else if (Array.isArray(v)) {
         v.forEach(item => fd.append(k, item));
       } else {
@@ -722,10 +720,23 @@ export default function App() {
       }
     }
 
-    // Also append top-level core fields so backend receives them as first-class fields
+    // Append resume file (if present) under canonical keys — we skipped core ids above
+    try {
+      const resumeFile = values[core.resumeId] || values[CORE_QUESTIONS.resume.id];
+      if (resumeFile instanceof File) {
+        // primary key
+        fd.append('resume', resumeFile, resumeFile.name);
+        // additional names for compatibility (server-side may expect any of these)
+        try { fd.append('resumeFile', resumeFile, resumeFile.name); } catch (err) {}
+        try { fd.append('cv', resumeFile, resumeFile.name); } catch (err) {}
+      }
+    } catch (err) {
+      // swallow
+    }
+
+    // Also append top-level core text fields so backend receives them as first-class fields
     // (so they can be saved into the top-level response properties and Google Sheet columns)
     try {
-      const core = formObj.meta?.coreFields || {};
       const fullnameVal = values[core.fullNameId] || values[CORE_QUESTIONS.fullName.id] || "";
       const emailVal = values[core.emailId] || values[CORE_QUESTIONS.email.id] || "";
       const phoneVal = values[core.phoneId] || values[CORE_QUESTIONS.phone.id] || "";
