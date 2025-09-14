@@ -262,6 +262,9 @@ async function connectMongo() {
   }
 }
 
+
+
+
 /** ---------- Normalizers ---------- **/
 function normalizeDoc(doc) { if (!doc) return doc; const copy = { ...doc }; delete copy._id; return copy; }
 
@@ -1005,3 +1008,20 @@ connectMongo()
       console.log(`Backend listening on ${PORT} (without Mongo)`);
     });
   });
+
+/** ---------- Startup migration: ensure is_deleted exists ---------- **/
+async function ensureIsDeletedField() {
+  if (!db) return;
+  const collections = ['openings', 'forms', 'responses'];
+  for (const col of collections) {
+    try {
+      const res = await db.collection(col).updateMany(
+        { is_deleted: { $exists: false } },
+        { $set: { is_deleted: false } }
+      );
+      console.log(`[migration:is_deleted] ${col}: matched=${res.matchedCount}, modified=${res.modifiedCount}`);
+    } catch (err) {
+      console.error(`[migration:is_deleted] error on ${col}`, err.message);
+    }
+  }
+}
