@@ -1291,117 +1291,151 @@ export default function App() {
       {showFormModal && formModalOpeningId && (() => {
         const op = openings.find(o => o.id === formModalOpeningId) || { id: formModalOpeningId, title: 'Opening' };
         const formObj = forms[formModalOpeningId] || ensureCoreFieldsInForm({ questions: templateQuestions.map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } });
+
+        // header height (used for sticky offsets). Match with classes below if you change sizes.
+        const headerHeight = 74; // px
+
         return (
-          <div key={"formmodal_" + formModalOpeningId} className="fixed inset-0 bg-black/40 flex items-start justify-center z-50 pt-10">
-            <div className="bg-white rounded-lg p-6 w-[920px] max-h-[85vh] overflow-auto shadow-xl">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h3 className="text-lg font-semibold mb-1">Form Editor — {op.title}</h3>
-                  <div className="text-xs text-gray-500">Edit questions, save, publish, or share links. Core fields are mandatory and cannot be removed.</div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">+ Add</button>
-                  <button onClick={() => handleSaveForm(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">Save</button>
-                  <button onClick={() => handlePublishForm(op.id)} className="px-3 py-2 bg-green-600 text-white rounded">Publish</button>
-                  <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-2 border rounded text-red-600 bg-white hover:shadow">Delete</button>
-                  <button onClick={() => closeFormModal()} className="px-3 py-2 border rounded bg-white hover:shadow">Close</button>
+          <div key={"formmodal_" + formModalOpeningId} className="fixed inset-0 bg-black/40 flex items-start justify-center z-50 pt-6">
+            <div className="bg-white rounded-lg shadow-xl w-[920px] max-h-[86vh] overflow-hidden">
+              {/* Sticky Header */}
+              <div className="w-full sticky top-0 z-30 bg-white border-b" style={{ height: headerHeight }}>
+                <div className="flex items-center justify-between p-4">
+                  <div>
+                    <h3 className="text-lg font-semibold mb-1">Form Editor — {op.title}</h3>
+                    <div className="text-xs text-gray-500">Edit questions, save, publish, or share links. Core fields are mandatory and cannot be removed.</div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">+ Add</button>
+                    <button onClick={() => handleSaveForm(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">Save</button>
+                    <button onClick={() => handlePublishForm(op.id)} className="px-3 py-2 bg-green-600 text-white rounded">Publish</button>
+                    <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-2 border rounded text-red-600 bg-white hover:shadow">Delete</button>
+                    <button onClick={() => closeFormModal()} className="px-3 py-2 border rounded bg-white hover:shadow">Close</button>
+                  </div>
                 </div>
               </div>
 
-              <div className="flex gap-6">
-                {/* Question Bank (left) */}
-                <div className="w-1/3 border-r pr-4">
-                  <h3 className="font-semibold mb-2">Question Bank</h3>
-                  <div className="space-y-3">
-                    {questionBank.length === 0 ? (
-                      <div className="text-xs text-gray-400">No questions in bank yet. Create one using "+ Add".</div>
-                    ) : (
-                      questionBank.map(q => (
-                        <div key={q.id} className="p-3 border rounded bg-white hover:bg-gray-50 cursor-pointer" onClick={() => addQuestion(op.id, q)}>
-                          <div className="font-medium text-sm">{q.label}</div>
-                          <div className="text-xs text-gray-500 mt-1">{q.type}{q.required ? ' • required' : ''}</div>
-                        </div>
-                      ))
-                    )}
+              {/* Content area: 3 columns, each with its own vertical scrolling */}
+              <div className="grid grid-cols-3 gap-6 p-4" style={{ height: `calc(86vh - ${headerHeight}px)` }}>
+                {/* Column 1: Question Bank */}
+                <div className="flex flex-col">
+                  <div className="sticky" style={{ top: headerHeight - 6, zIndex: 20 }}>
+                    <h3 className="font-semibold mb-2">Question Bank</h3>
                   </div>
-
-                  <div className="mt-6">
-                    <div className="text-xs text-gray-500 mb-2">Or use template items</div>
-                    {templateQuestions.map(t => (
-                      <div key={t.id} className="p-3 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(op.id, t)}>{t.label}</div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Form Questions (middle) */}
-                <div className="w-1/3">
-                  <h3 className="font-semibold mb-2">Form Questions</h3>
-                  <ul className="space-y-3">
-                    {(formObj.questions || []).map((q, idx) => (
-                      <li key={q.id} draggable onDragStart={(e) => e.dataTransfer.setData('from', idx)} onDrop={(e) => { const from = parseInt(e.dataTransfer.getData('from')); onDrag(op.id, from, idx); }} onDragOver={(e) => e.preventDefault()} className="p-3 border rounded flex justify-between items-start bg-white">
-                        <div style={{ minWidth: 0 }}>
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="font-medium text-sm">{q.label}{PROTECTED_IDS.has(q.id) ? ' (mandatory)' : ''}</div>
-                            <div className="text-xs text-gray-400">{q.type}</div>
+                  <div className="overflow-auto pr-2" style={{ maxHeight: `calc(86vh - ${headerHeight + 48}px)` }}>
+                    <div className="space-y-3 pb-6">
+                      {questionBank.length === 0 ? (
+                        <div className="text-xs text-gray-400">No questions in bank yet. Create one using "+ Add".</div>
+                      ) : (
+                        questionBank.map(q => (
+                          <div key={q.id} className="p-3 border rounded bg-white hover:bg-gray-50 cursor-pointer" onClick={() => addQuestion(op.id, q)}>
+                            <div className="font-medium text-sm">{q.label}</div>
+                            <div className="text-xs text-gray-500 mt-1">{q.type}{q.required ? ' • required' : ''}</div>
                           </div>
-                          <div className="text-xs text-gray-500 mt-1">
-                            {q.required ? 'Required' : 'Optional'}
-                            {q.validation && Object.keys(q.validation).length ? ` • Validation: ${Object.entries(q.validation).map(([k,v]) => `${k}=${v}`).join(', ')}` : ''}
-                          </div>
-                        </div>
-                        <div className="flex flex-col gap-2 items-end">
-                          <div className="flex gap-2">
-                            {!PROTECTED_IDS.has(q.id) ? <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500 text-sm">Remove</button> : <div className="text-xs text-gray-400">Protected</div>}
-                          </div>
-                          <div>
-                            <label className="text-xs text-gray-500 mr-2">Page break after</label>
-                            <input type="checkbox" checked={!!q.pageBreak} onChange={() => togglePageBreak(op.id, q.id)} />
-                          </div>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+                        ))
+                      )}
 
-                {/* Preview & Share (right) */}
-                <div className="w-1/3">
-                  <h3 className="font-semibold mb-2">Preview & Share</h3>
-
-                  {formObj.meta?.isPublished ? (
-                    <div>
-                      <div className="text-sm text-gray-600 mb-2">Form published on {formObj.meta.publishedAt ? new Date(formObj.meta.publishedAt).toLocaleString() : ''}</div>
-
-                      <div className="mb-2">
-                        <div className="text-xs font-semibold">Shareable links (by source)</div>
-                        <ul className="mt-2">
-                          {Object.entries(formObj.meta.shareLinks || {}).map(([src, link]) => (
-                            <li key={src} className="flex items-center justify-between mb-2">
-                              <div className="text-sm">{src}</div>
-                              <div className="flex items-center gap-2">
-                                <button onClick={() => handleCopy(link)} className="px-2 py-1 border rounded text-xs">Copy</button>
-                                <button onClick={() => openPublicFormByLink(op.id, src)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-
-                      <div className="mt-3">
-                        <div className="text-xs font-semibold">Generic link</div>
-                        <div className="flex items-center gap-2 mt-2">
-                          <div className="text-sm break-all">{formObj.meta.genericLink}</div>
-                          <button onClick={() => handleCopy(formObj.meta.genericLink)} className="px-2 py-1 border rounded text-xs">Copy</button>
-                          <button onClick={() => openPublicFormByLink(op.id, undefined)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
-                        </div>
+                      <div className="mt-6">
+                        <div className="text-xs text-gray-500 mb-2">Or use template items</div>
+                        {templateQuestions.map(t => (
+                          <div key={t.id} className="p-3 border rounded mb-2 cursor-pointer hover:bg-gray-50" onClick={() => addQuestion(op.id, t)}>{t.label}</div>
+                        ))}
                       </div>
                     </div>
-                  ) : (
-                    <div className="text-sm text-gray-500">Form not yet published. Click Publish to generate shareable links per source.</div>
-                  )}
+                  </div>
+                </div>
 
-                  <div className="mt-4">
-                    <div className="text-xs font-semibold">Live response count</div>
-                    <div className="text-lg font-medium mt-1">{responses.filter(r => r.openingId === op.id).length}</div>
+                {/* Column 2: Form Questions */}
+                <div className="flex flex-col">
+                  <div className="sticky" style={{ top: headerHeight - 6, zIndex: 20 }}>
+                    <h3 className="font-semibold mb-2">Form Questions</h3>
+                  </div>
+
+                  <div className="overflow-auto" style={{ maxHeight: `calc(86vh - ${headerHeight + 48}px)` }}>
+                    <ul className="space-y-3 pb-6">
+                      {(formObj.questions || []).map((q, idx) => (
+                        <li
+                          key={q.id}
+                          draggable
+                          onDragStart={(e) => e.dataTransfer.setData('from', idx)}
+                          onDrop={(e) => { const from = parseInt(e.dataTransfer.getData('from')); onDrag(op.id, from, idx); }}
+                          onDragOver={(e) => e.preventDefault()}
+                          className="p-3 border rounded bg-white flex justify-between items-start"
+                        >
+                          <div style={{ minWidth: 0 }}>
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="text-sm font-medium truncate">{q.label}{PROTECTED_IDS.has(q.id) ? ' (mandatory)' : ''}</div>
+                              <div className="text-xs text-gray-400">{q.type}</div>
+                            </div>
+
+                            <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                              <div>{q.required ? 'Required' : 'Optional'}</div>
+                              {q.validation && Object.keys(q.validation).length ? (
+                                <div className="text-xs text-gray-400">• {Object.entries(q.validation).map(([k,v]) => `${k}=${v}`).join(', ')}</div>
+                              ) : null}
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col items-end gap-3">
+                            <div className="flex gap-2">
+                              {!PROTECTED_IDS.has(q.id) ? <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500 text-sm">Remove</button> : <div className="text-xs text-gray-400">Protected</div>}
+                            </div>
+                            <div className="flex items-center gap-2 text-xs text-gray-500">
+                              <label className="text-xs">Page break after</label>
+                              <input type="checkbox" checked={!!q.pageBreak} onChange={() => togglePageBreak(op.id, q.id)} />
+                            </div>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+
+                {/* Column 3: Preview & Share */}
+                <div className="flex flex-col">
+                  <div className="sticky" style={{ top: headerHeight - 6, zIndex: 20 }}>
+                    <h3 className="font-semibold mb-2">Preview & Share</h3>
+                  </div>
+
+                  <div className="overflow-auto pl-2" style={{ maxHeight: `calc(86vh - ${headerHeight + 48}px)` }}>
+                    {formObj.meta?.isPublished ? (
+                      <div className="pb-6">
+                        <div className="text-sm text-gray-600 mb-2">Form published on {formObj.meta.publishedAt ? new Date(formObj.meta.publishedAt).toLocaleString() : ''}</div>
+
+                        <div className="mb-2">
+                          <div className="text-xs font-semibold">Shareable links (by source)</div>
+                          <ul className="mt-2 space-y-2">
+                            {Object.entries(formObj.meta.shareLinks || {}).map(([src, link]) => (
+                              <li key={src} className="flex items-center justify-between">
+                                <div className="text-sm">{src}</div>
+                                <div className="flex items-center gap-2">
+                                  <button onClick={() => handleCopy(link)} className="px-2 py-1 border rounded text-xs">Copy</button>
+                                  <button onClick={() => openPublicFormByLink(op.id, src)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+
+                        <div className="mt-3">
+                          <div className="text-xs font-semibold">Generic link</div>
+                          <div className="flex items-start gap-2 mt-2">
+                            <div className="text-sm break-all">{formObj.meta.genericLink}</div>
+                            <div className="flex flex-col gap-2">
+                              <button onClick={() => handleCopy(formObj.meta.genericLink)} className="px-2 py-1 border rounded text-xs">Copy</button>
+                              <button onClick={() => openPublicFormByLink(op.id, undefined)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs">Open</button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-sm text-gray-500 pb-6">Form not yet published. Click Publish to generate shareable links per source.</div>
+                    )}
+
+                    <div className="mt-4">
+                      <div className="text-xs font-semibold">Live response count</div>
+                      <div className="text-lg font-medium mt-1">{responses.filter(r => r.openingId === op.id).length}</div>
+                    </div>
                   </div>
                 </div>
               </div>
