@@ -23,6 +23,7 @@ const CORE_QUESTIONS = {
   email: { id: "q_email", type: "email", label: "Email address", required: true },
   phone: { id: "q_phone", type: "short_text", label: "Phone number", required: true },
   resume: { id: "q_resume", type: "file", label: "Upload resume / CV", required: true },
+  college: { id: "q_college", type: "short_text", label: "College / Institute", required: true }, // new core question
 };
 const PROTECTED_IDS = new Set(Object.values(CORE_QUESTIONS).map(q => q.id));
 
@@ -34,6 +35,7 @@ const templateQuestions = [
   CORE_QUESTIONS.email,
   CORE_QUESTIONS.phone,
   CORE_QUESTIONS.resume,
+  CORE_QUESTIONS.college, // include college as core in templates
   { id: uuidv4(), type: "number", label: "Years of experience" },
   { id: uuidv4(), type: "url", label: "LinkedIn / Portfolio URL" },
   { id: uuidv4(), type: "dropdown", label: "How did you hear about us?", options: ["LinkedIn", "Internshala", "Referral"] },
@@ -134,7 +136,6 @@ function MultiSelectDropdown({
           className="absolute z-50 bg-white border rounded shadow-lg p-3 max-h-64 overflow-auto"
           style={{
             ...dropdownPositionStyle,
-            // ensure we render above other modal/backdrop elements when required
             zIndex: 9999
           }}
         >
@@ -219,9 +220,10 @@ export default function App() {
   const [filterLocations, setFilterLocations] = useState([]);
   const [filterDepartments, setFilterDepartments] = useState([]);
   const [filterSources, setFilterSources] = useState([]);
-  const [filterFullNames, setFilterFullNames] = useState([]);
-  const [filterEmails, setFilterEmails] = useState([]);
   const [filterStatus, setFilterStatus] = useState([]);
+
+  // Search query for candidate list (search across name, email, college, opening title, source, response id)
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -288,7 +290,8 @@ export default function App() {
   ------------------------- */
   function ensureCoreFieldsInForm(formObj) {
     const existingIds = new Set((formObj.questions || []).map(q => q.id));
-    const coreOrder = [CORE_QUESTIONS.fullName, CORE_QUESTIONS.email, CORE_QUESTIONS.phone, CORE_QUESTIONS.resume];
+    // include college in core order
+    const coreOrder = [CORE_QUESTIONS.fullName, CORE_QUESTIONS.email, CORE_QUESTIONS.phone, CORE_QUESTIONS.resume, CORE_QUESTIONS.college];
     const missing = coreOrder.filter(cq => !existingIds.has(cq.id)).map(cq => ({ ...cq }));
     if (missing.length) {
       formObj.questions = [...missing, ...(formObj.questions || [])];
@@ -305,6 +308,7 @@ export default function App() {
       emailId: CORE_QUESTIONS.email.id,
       phoneId: CORE_QUESTIONS.phone.id,
       resumeId: CORE_QUESTIONS.resume.id,
+      collegeId: CORE_QUESTIONS.college.id,
     };
     return formObj;
   }
@@ -339,7 +343,7 @@ export default function App() {
       });
       (openings || []).forEach(op => {
         if (!map[op.id]) {
-          const base = { questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } };
+          const base = { questions: templateQuestions.slice(0, 5).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } };
           map[op.id] = base;
         }
       });
@@ -383,7 +387,7 @@ export default function App() {
         created = { id: res.id, ...payload, createdAt: res.createdAt || new Date().toISOString() };
         setOpenings(s => [created, ...s]);
       }
-      setForms(f => ({ ...f, [created.id]: ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } }) }));
+      setForms(f => ({ ...f, [created.id]: ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 5).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } }) }));
       setShowCreate(false);
     } catch (err) {
       console.error('create opening', err);
@@ -589,7 +593,7 @@ export default function App() {
     setForms((f) => {
       const copy = { ...f };
       if (!copy[openingId]) {
-        copy[openingId] = ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } });
+        copy[openingId] = ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 5).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } });
       } else {
         copy[openingId] = ensureCoreFieldsInForm({ questions: (copy[openingId].questions || []).map(q => ({ ...q })), meta: (copy[openingId].meta || {}) });
       }
@@ -718,28 +722,6 @@ export default function App() {
     return uniq;
   }, [responses]);
 
-  const nameOptions = useMemo(() => {
-    const uniq = [];
-    const seen = new Set();
-    responses.forEach(r => {
-      const v = (r.fullName || (r.answers && (r.answers.fullname || r.answers.name)) || '').trim();
-      if (!v) return;
-      if (!seen.has(v)) { seen.add(v); uniq.push({ value: v, label: v }); }
-    });
-    return uniq;
-  }, [responses]);
-
-  const emailOptions = useMemo(() => {
-    const uniq = [];
-    const seen = new Set();
-    responses.forEach(r => {
-      const v = (r.email || (r.answers && r.answers.email) || '').trim();
-      if (!v) return;
-      if (!seen.has(v)) { seen.add(v); uniq.push({ value: v, label: v }); }
-    });
-    return uniq;
-  }, [responses]);
-
   const statusOptions = useMemo(() => {
     const uniq = [];
     const seen = new Set();
@@ -751,9 +733,41 @@ export default function App() {
   }, [responses]);
 
   /* -------------------------
-     Apply filters to responses
+     Utilities for extracting fields from a response
+  ------------------------- */
+  function extractCandidateName(r) {
+    return (r.fullName || (r.answers && (r.answers.fullname || r.answers.name)) || "").trim();
+  }
+  function extractCandidateEmail(r) {
+    return ((r.email || (r.answers && r.answers.email)) || "").trim();
+  }
+  function extractCandidateCollege(r) {
+    // flexible: check multiple common keys
+    const candidates = [
+      r.college,
+      r.collegeName,
+      r.college_name,
+      r.college_institute,
+      r.college_institute_name,
+      r.answers && (r.answers.college || r.answers.collegeName || r.answers.college_name || r.answers.institute || r.answers.institution)
+    ];
+    for (const c of candidates) {
+      if (typeof c === 'string' && c.trim()) return c.trim();
+    }
+    // sometimes answers may be mapping of question ids -> value; try to find by checking against form coreFields
+    try {
+      const form = forms[r.openingId];
+      const collegeId = form?.meta?.coreFields?.collegeId;
+      if (collegeId && r.answers && r.answers[collegeId]) return (r.answers[collegeId] || "").trim();
+    } catch (e) {}
+    return "";
+  }
+
+  /* -------------------------
+     Apply filters to responses (includes searchQuery)
   ------------------------- */
   const filteredResponses = useMemo(() => {
+    const q = (searchQuery || "").toLowerCase().trim();
     return responses.filter(r => {
       // Opening filter
       if (filterOpenings.length > 0 && !filterOpenings.includes(r.openingId)) return false;
@@ -764,18 +778,25 @@ export default function App() {
       if (filterDepartments.length > 0 && !filterDepartments.includes((op.department || ''))) return false;
       // Source
       if (filterSources.length > 0 && !filterSources.includes((r.source || 'unknown'))) return false;
-      // Full name
-      const fullname = (r.fullName || (r.answers && (r.answers.fullname || r.answers.name)) || '').trim();
-      if (filterFullNames.length > 0 && !filterFullNames.includes(fullname)) return false;
-      // Email
-      const email = (r.email || (r.answers && r.answers.email) || '').trim();
-      if (filterEmails.length > 0 && !filterEmails.includes(email)) return false;
       // Status
       const status = (r.status || 'Applied');
       if (filterStatus.length > 0 && !filterStatus.includes(status)) return false;
+
+      if (q) {
+        const name = (extractCandidateName(r) || "").toLowerCase();
+        const email = (extractCandidateEmail(r) || "").toLowerCase();
+        const college = (extractCandidateCollege(r) || "").toLowerCase();
+        const openingTitle = (op.title || "").toLowerCase();
+        const source = (r.source || "unknown").toLowerCase();
+        const id = (r.id || "").toLowerCase();
+
+        const match = name.includes(q) || email.includes(q) || college.includes(q) || openingTitle.includes(q) || source.includes(q) || id.includes(q);
+        if (!match) return false;
+      }
+
       return true;
     });
-  }, [responses, openings, filterOpenings, filterLocations, filterDepartments, filterSources, filterFullNames, filterEmails, filterStatus]);
+  }, [responses, openings, filterOpenings, filterLocations, filterDepartments, filterSources, filterStatus, searchQuery]);
 
   /* -------------------------
      Render gating
@@ -928,16 +949,27 @@ export default function App() {
             <div className="grid grid-cols-3 gap-6">
               {/* Main candidates column */}
               <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
-                {/* Filters row moved to top of this column? We have filters on right aside; keep a small heading */}
+                {/* Search box */}
+                <div className="mb-4">
+                  <input
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search candidates by name, email, college, opening, source or id..."
+                    className="w-full border p-3 rounded"
+                  />
+                  <div className="text-xs text-gray-400 mt-2">Search searches name, email, college, opening title, source and response id.</div>
+                </div>
+
                 <h2 className="font-semibold mb-4">Candidates</h2>
 
                 <div className="space-y-4">
-                  {filteredResponses.length === 0 && <div className="text-sm text-gray-500">No candidates match the selected filters.</div>}
+                  {filteredResponses.length === 0 && <div className="text-sm text-gray-500">No candidates match the selected filters or search.</div>}
 
                   {filteredResponses.map(resp => {
                     const opening = openings.find(o => o.id === resp.openingId) || {};
                     const candidateName = resp.fullName || (resp.answers && (resp.answers.fullname || resp.answers.name)) || 'Candidate';
                     const candidateEmail = (resp.email || (resp.answers && resp.answers.email) || '').trim();
+                    const candidateCollege = extractCandidateCollege(resp);
                     return (
                       <div key={resp.id} className="p-6 border rounded relative bg-white min-h-[130px]">
                         <div className="flex justify-between items-start">
@@ -951,6 +983,11 @@ export default function App() {
                               {opening.title || '—'} &nbsp;•&nbsp; {opening.location || ''}
                             </div>
                             <div className="text-sm text-gray-500 mt-2">Source: <span className="break-words inline-block max-w-[60%]">{resp.source || 'unknown'}</span></div>
+
+                            {/* College display */}
+                            {candidateCollege ? (
+                              <div className="text-sm text-gray-600 mt-2">College: <span className="font-medium">{candidateCollege}</span></div>
+                            ) : null}
 
                             {/* Bottom-left row: Resume and response id - separated and allowed to wrap so they don't overlap */}
                             <div className="mt-4 text-sm flex flex-wrap items-center gap-2">
@@ -1039,30 +1076,6 @@ export default function App() {
                     selected={filterSources}
                     onChange={setFilterSources}
                     placeholder="All Source"
-                    searchEnabled={true}
-                  />
-
-                  <div className="mt-4 flex items-center justify-between">
-                    <div />
-                  </div>
-                  <MultiSelectDropdown
-                    label="Candidate"
-                    options={nameOptions}
-                    selected={filterFullNames}
-                    onChange={setFilterFullNames}
-                    placeholder="All Full name"
-                    searchEnabled={true}
-                  />
-
-                  <div className="mt-4 flex items-center justify-between">
-                    <div />
-                  </div>
-                  <MultiSelectDropdown
-                    label="Email"
-                    options={emailOptions}
-                    selected={filterEmails}
-                    onChange={setFilterEmails}
-                    placeholder="All Email"
                     searchEnabled={true}
                   />
 
@@ -1191,7 +1204,7 @@ export default function App() {
       {/* FORM EDITOR MODAL (per opening) */}
       {showFormModal && formModalOpeningId && (() => {
         const op = openings.find(o => o.id === formModalOpeningId) || { id: formModalOpeningId, title: 'Opening' };
-        const formObj = forms[formModalOpeningId] || ensureCoreFieldsInForm({ questions: templateQuestions.slice(0,4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } });
+        const formObj = forms[formModalOpeningId] || ensureCoreFieldsInForm({ questions: templateQuestions.slice(0,5).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } });
         return (
           <div key={"formmodal_" + formModalOpeningId} className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
             <div className="bg-white rounded-lg p-6 w-[920px] max-h-[90vh] overflow-auto shadow-xl">
