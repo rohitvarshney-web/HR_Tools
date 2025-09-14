@@ -27,7 +27,8 @@ const CORE_QUESTIONS = {
   email: { id: "q_email", type: "email", label: "Email address", required: true },
   phone: { id: "q_phone", type: "short_text", label: "Phone number", required: true },
   resume: { id: "q_resume", type: "file", label: "Upload resume / CV", required: true },
-  college: { id: "q_college", type: "short_text", label: "College / Organization", required: true }, // <-- changed label
+  // updated label per request
+  college: { id: "q_college", type: "short_text", label: "College / Organization", required: true },
 };
 const PROTECTED_IDS = new Set(Object.values(CORE_QUESTIONS).map(q => q.id));
 
@@ -976,7 +977,7 @@ export default function App() {
           <nav className="space-y-2">
             <div onClick={() => setActiveTab("overview")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'overview' ? 'bg-gray-800' : ''}`}>{<Icon name="menu" />} Overview</div>
             <div onClick={() => setActiveTab("jobs")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'jobs' ? 'bg-gray-800' : ''}`}>Jobs</div>
-            <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg-gray-800' : ''}`}>Hiring</div>
+            <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg.gray-800' : ''}`}>Hiring</div>
           </nav>
         </div>
       </aside>
@@ -1392,14 +1393,14 @@ export default function App() {
                           onDragOver={(e) => e.preventDefault()}
                           className="p-3 border rounded bg-white flex flex-col gap-2"
                         >
-                          {/* Top row: Label + (placeholder to keep layout consistent) */}
+                          {/* Top row: Label + (reserved space for type removed from top-right) */}
                           <div className="flex items-start justify-between">
                             <div className="text-sm font-medium leading-tight">
                               {q.required ? <span className="text-red-500 mr-2">*</span> : null}
                               <span className="whitespace-normal">{q.label}</span>
                             </div>
 
-                            {/* removed type from top-right for consistency; keep empty placeholder to preserve layout */}
+                            {/* keep layout balanced; removed separate type display for non-protected */}
                             <div />
                           </div>
 
@@ -1410,7 +1411,7 @@ export default function App() {
                             ) : null}
                           </div>
 
-                          {/* Bottom row: left = protected lock + type (or just type for non-protected), right = controls */}
+                          {/* Bottom row: left = protected lock + type (or delete icon + type for optional), right = controls */}
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2 text-xs text-gray-500">
                               {PROTECTED_IDS.has(q.id) ? (
@@ -1419,24 +1420,18 @@ export default function App() {
                                   <div className="text-xs text-gray-400">{q.type}</div>
                                 </>
                               ) : (
-                                // For non-protected, show the data type in the same spot (consistent with protected)
-                                <div className="text-xs text-gray-400">{q.type}</div>
+                                <>
+                                  {/* delete icon sits where lock icon is — per request */}
+                                  <button onClick={() => removeQuestion(op.id, q.id)} title="Remove question" className="p-1 -ml-1 rounded hover:bg-red-50">
+                                    <Icon name="trash" className="w-4 h-4 text-red-500" />
+                                  </button>
+                                  <div className="text-xs text-gray-400">{q.type}</div>
+                                </>
                               )}
                             </div>
 
                             <div className="flex items-center gap-3">
-                              {!PROTECTED_IDS.has(q.id) ? (
-                                <button
-                                  onClick={() => removeQuestion(op.id, q.id)}
-                                  className="text-red-500 p-1 rounded hover:bg-red-50"
-                                  aria-label="Remove question"
-                                  title="Remove question"
-                                >
-                                  <Icon name="trash" className="w-5 h-5" />
-                                </button>
-                              ) : (
-                                <div className="text-xs text-gray-400"></div>
-                              )}
+                              {/* we removed textual 'Remove' button — deletion is handled by the icon on the left */}
                               <label className="flex items-center gap-2 text-xs text-gray-500">
                                 <input type="checkbox" checked={!!q.pageBreak} onChange={() => togglePageBreak(op.id, q.id)} />
                                 Page Break
