@@ -27,7 +27,7 @@ const CORE_QUESTIONS = {
   email: { id: "q_email", type: "email", label: "Email address", required: true },
   phone: { id: "q_phone", type: "short_text", label: "Phone number", required: true },
   resume: { id: "q_resume", type: "file", label: "Upload resume / CV", required: true },
-  college: { id: "q_college", type: "short_text", label: "College / Organization", required: true }, // <-- changed label
+  college: { id: "q_college", type: "short_text", label: "College / Organization", required: true },
 };
 const PROTECTED_IDS = new Set(Object.values(CORE_QUESTIONS).map(q => q.id));
 
@@ -262,19 +262,26 @@ export default function App() {
      Helper: ensure core fields exist in a form object
   ------------------------- */
   function ensureCoreFieldsInForm(formObj) {
+    // Avoid mutating the original object unexpectedly
+    formObj = { ...(formObj || {}) };
+    formObj.questions = (formObj.questions || []).map(q => ({ ...q }));
+
     const existingIds = new Set((formObj.questions || []).map(q => q.id));
     // always inject core fields at start in this defined order
     const coreOrder = [CORE_QUESTIONS.fullName, CORE_QUESTIONS.email, CORE_QUESTIONS.phone, CORE_QUESTIONS.resume, CORE_QUESTIONS.college];
+    // Only add the ones missing
     const missing = coreOrder.filter(cq => !existingIds.has(cq.id)).map(cq => ({ ...cq }));
     if (missing.length) {
       formObj.questions = [...missing, ...(formObj.questions || [])];
     }
+
     formObj.questions = (formObj.questions || []).map(q => {
       if (PROTECTED_IDS.has(q.id)) {
         return { ...q, required: true, validation: q.validation || {}, pageBreak: q.pageBreak || false };
       }
       return { ...q, validation: q.validation || {}, pageBreak: q.pageBreak || false };
     });
+
     formObj.meta = formObj.meta || {};
     formObj.meta.coreFields = formObj.meta.coreFields || {
       fullNameId: CORE_QUESTIONS.fullName.id,
@@ -696,24 +703,28 @@ export default function App() {
     // if all validations passed — build FormData and submit
     const fd = new FormData();
 
-    // Add answers and files
+    // Important: Avoid sending duplicates for core fields.
+    // We'll skip appending the core question ids when building the general answers part,
+    // and append canonical top-level core fields exactly once below.
+    const coreMeta = formObj.meta?.coreFields || {};
+    const coreIdsSet = new Set([
+      coreMeta.fullNameId || CORE_QUESTIONS.fullName.id,
+      coreMeta.emailId || CORE_QUESTIONS.email.id,
+      coreMeta.phoneId || CORE_QUESTIONS.phone.id,
+      coreMeta.resumeId || CORE_QUESTIONS.resume.id,
+      coreMeta.collegeId || CORE_QUESTIONS.college.id
+    ]);
+
+    // Append non-core answers and files (skip the core question ids)
     for (const [k, v] of Object.entries(values)) {
       if (v === null || v === undefined) continue;
+      if (coreIdsSet.has(k)) {
+        // skip core questions here — we'll append canonical core fields below to avoid duplicates
+        continue;
+      }
+
       if (v instanceof File) {
-        // append under its question id
         fd.append(k, v, v.name);
-        // ALSO append under a stable key the server might expect (prevent Multer Unexpected field)
-        // If the file is the core resume field, append as 'resume' too
-        const lk = (k || "").toLowerCase();
-        if (k === CORE_QUESTIONS.resume.id || lk.includes('resume') || lk.includes('cv') || lk.includes('upload_resume')) {
-          try {
-            fd.append('resume', v, v.name);
-            fd.append('resumeFile', v, v.name);
-            fd.append('cv', v, v.name);
-          } catch (err) {
-            // some browsers may throw on double appends of the same File object in some environments - ignore
-          }
-        }
       } else if (Array.isArray(v)) {
         v.forEach(item => fd.append(k, item));
       } else {
@@ -721,14 +732,24 @@ export default function App() {
       }
     }
 
-    // Also append top-level core fields so backend receives them as first-class fields
-    // (so they can be saved into the top-level response properties and Google Sheet columns)
+    // Append resume file (if present) under canonical key(s).
     try {
-      const core = formObj.meta?.coreFields || {};
-      const fullnameVal = values[core.fullNameId] || values[CORE_QUESTIONS.fullName.id] || "";
-      const emailVal = values[core.emailId] || values[CORE_QUESTIONS.email.id] || "";
-      const phoneVal = values[core.phoneId] || values[CORE_QUESTIONS.phone.id] || "";
-      const collegeVal = values[core.collegeId] || values[CORE_QUESTIONS.college.id] || "";
+      const resumeFile = values[coreMeta.resumeId] || values[CORE_QUESTIONS.resume.id];
+      if (resumeFile instanceof File) {
+        fd.append('resume', resumeFile, resumeFile.name);
+        try { fd.append('resumeFile', resumeFile, resumeFile.name); } catch (e) { /* ignore double-append errors */ }
+        try { fd.append('cv', resumeFile, resumeFile.name); } catch (e) { /* ignore */ }
+      }
+    } catch (err) {
+      // not critical
+    }
+
+    // Append canonical top-level text fields exactly once
+    try {
+      const fullnameVal = values[coreMeta.fullNameId] || values[CORE_QUESTIONS.fullName.id] || "";
+      const emailVal = values[coreMeta.emailId] || values[CORE_QUESTIONS.email.id] || "";
+      const phoneVal = values[coreMeta.phoneId] || values[CORE_QUESTIONS.phone.id] || "";
+      const collegeVal = values[coreMeta.collegeId] || values[CORE_QUESTIONS.college.id] || "";
 
       if (fullnameVal) fd.append('fullName', fullnameVal);
       if (emailVal) fd.append('email', emailVal);
@@ -1392,14 +1413,14 @@ export default function App() {
                           onDragOver={(e) => e.preventDefault()}
                           className="p-3 border rounded bg-white flex flex-col gap-2"
                         >
-                          {/* Top row: Label + (placeholder to keep layout consistent) */}
+                          {/* Top row: Label + (reserved space for type removed from top-right) */}
                           <div className="flex items-start justify-between">
                             <div className="text-sm font-medium leading-tight">
                               {q.required ? <span className="text-red-500 mr-2">*</span> : null}
                               <span className="whitespace-normal">{q.label}</span>
                             </div>
 
-                            {/* removed type from top-right for consistency; keep empty placeholder to preserve layout */}
+                            {/* keep layout balanced; removed separate type display for non-protected */}
                             <div />
                           </div>
 
@@ -1410,7 +1431,7 @@ export default function App() {
                             ) : null}
                           </div>
 
-                          {/* Bottom row: left = protected lock + type (or just type for non-protected), right = controls */}
+                          {/* Bottom row: left = protected lock + type (or delete icon + type for optional), right = controls */}
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2 text-xs text-gray-500">
                               {PROTECTED_IDS.has(q.id) ? (
@@ -1419,24 +1440,18 @@ export default function App() {
                                   <div className="text-xs text-gray-400">{q.type}</div>
                                 </>
                               ) : (
-                                // For non-protected, show the data type in the same spot (consistent with protected)
-                                <div className="text-xs text-gray-400">{q.type}</div>
+                                <>
+                                  {/* delete icon sits where lock icon is — per request */}
+                                  <button onClick={() => removeQuestion(op.id, q.id)} title="Remove question" className="p-1 -ml-1 rounded hover:bg-red-50">
+                                    <Icon name="trash" className="w-4 h-4 text-red-500" />
+                                  </button>
+                                  <div className="text-xs text-gray-400">{q.type}</div>
+                                </>
                               )}
                             </div>
 
                             <div className="flex items-center gap-3">
-                              {!PROTECTED_IDS.has(q.id) ? (
-                                <button
-                                  onClick={() => removeQuestion(op.id, q.id)}
-                                  className="text-red-500 p-1 rounded hover:bg-red-50"
-                                  aria-label="Remove question"
-                                  title="Remove question"
-                                >
-                                  <Icon name="trash" className="w-5 h-5" />
-                                </button>
-                              ) : (
-                                <div className="text-xs text-gray-400"></div>
-                              )}
+                              {/* we removed textual 'Remove' button — deletion is handled by the icon on the left */}
                               <label className="flex items-center gap-2 text-xs text-gray-500">
                                 <input type="checkbox" checked={!!q.pageBreak} onChange={() => togglePageBreak(op.id, q.id)} />
                                 Page Break
@@ -1646,10 +1661,6 @@ export default function App() {
 
 /* -------------------------
    PageRenderer component for public form pagination
-   - receives pageQuestions: array of questions for current page
-   - allSchema: entire schema (used for validation on submit)
-   - pageIndex, totalPages, onBack, onNext
-   - this renders inputs and the appropriate buttons (Back/Next/Submit Form)
   ------------------------- */
 function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, totalPages = 1, onBack = () => {}, onNext = () => {}, isLastPage = true }) {
   // We purposely don't manage component-level form state here -- the parent form submission
