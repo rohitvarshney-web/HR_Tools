@@ -338,7 +338,6 @@ async function getFormFromStore(id) {
   return arr.find(f => f.id === id);
 }
 async function getFormForOpeningFromStore(openingId) {
-  // helper to fetch form for openingId (returns first form found)
   const forms = await listFormsFromStore(openingId);
   return (forms && forms.length) ? forms[0] : null;
 }
@@ -366,7 +365,7 @@ async function deleteFormInStore(id) {
     const res = await db.collection('forms').deleteOne({ id });
     return { ok: true, deleted: res.deletedCount || 0 };
   }
-  const arr = readJsonFile( FORMS_FILE, []);
+  const arr = readJsonFile(FORMS_FILE, []);
   const newArr = arr.filter(f => f.id !== id);
   if (newArr.length === arr.length) return { ok: false, deleted: 0 };
   writeJsonFileAtomic(FORMS_FILE, newArr);
@@ -689,12 +688,12 @@ app.post('/public/openings/:id/schema', async (req, res) => {
 });
 
 /* Apply endpoint - store response, upload resume to Drive (strict: no local fallback), append to Sheet and record sheetRange
-   Updated to:
+   - accept any uploaded file field names (upload.any())
    - map submitted answer keys (ids or labels) to question labels using form schema (if available)
-   - extract mandatory fields (fullName, email, phone, resumeLink, college) to top-level response fields
-   - append sheet row with separate columns for those fields (college now included)
+   - extract mandatory fields (fullName, email, phone, resumeLink) to top-level response fields
+   - append sheet row with separate columns for those fields
 */
-app.post('/api/apply', upload.single('resume'), async (req, res) => {
+app.post('/api/apply', upload.any(), async (req, res) => {
   try {
     const openingId = req.query.opening || req.body.opening;
     const src = req.query.src || req.body.src || 'unknown';
@@ -702,12 +701,21 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
 
     const opening = await getOpeningFromStore(openingId) || readData().openings.find(o => o.id === openingId);
     const openingTitle = opening ? opening.title : null;
-    const openingLocation = opening ? opening.location : null; // NEW
+    const openingLocation = opening ? opening.location : null;
 
-    // resume upload (strict: require Drive upload to succeed)
+    // resume upload (strict: require Drive upload to succeed if a file was uploaded)
     let resumeLink = null;
-    if (req.file && req.file.buffer) {
-      const filename = `${Date.now()}_${(req.file.originalname || 'resume')}`;
+    let resumeFileObj = null;
+
+    // Accept multiple possible fieldnames for resume (q_resume, resume, resumeFile, cv, etc.)
+    const possibleResumeFieldNames = new Set(['resume', 'q_resume', 'resumeFile', 'cv', 'q_cv', 'file', 'attachment', 'upload_resume']);
+    if (req.files && Array.isArray(req.files) && req.files.length > 0) {
+      // find a file that looks like the resume or fallback to first file
+      resumeFileObj = req.files.find(f => possibleResumeFieldNames.has((f.fieldname || '').toString())) || req.files[0];
+    }
+
+    if (resumeFileObj && resumeFileObj.buffer) {
+      const filename = `${Date.now()}_${(resumeFileObj.originalname || 'resume')}`;
 
       // If DRIVE_FOLDER_ID not configured, return config error to caller
       if (!DRIVE_FOLDER_ID) {
@@ -717,11 +725,11 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
 
       try {
         // Upload to Drive and set public read permission (best-effort)
-        const bufferStream = new stream.PassThrough(); bufferStream.end(req.file.buffer);
+        const bufferStream = new stream.PassThrough(); bufferStream.end(resumeFileObj.buffer);
         const drive = await getDriveService();
         const created = await drive.files.create({
           requestBody: { name: filename, parents: [DRIVE_FOLDER_ID] },
-          media: { mimeType: req.file.mimetype || 'application/octet-stream', body: bufferStream },
+          media: { mimeType: resumeFileObj.mimetype || 'application/octet-stream', body: bufferStream },
           supportsAllDrives: true,
           fields: 'id, webViewLink, webContentLink'
         });
@@ -765,39 +773,27 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     const formQuestions = (formForOpening && formForOpening.data && Array.isArray(formForOpening.data.questions)) ? formForOpening.data.questions : [];
 
     // Build mapping from possible keys (ids / questionId / localLabel / id) -> label
-    // For each form question entry, try to resolve a definitive label
-    const idToLabel = {}; // maps possible keys -> label
+    const idToLabel = {};
     for (const fq of formQuestions) {
       let label = null;
-      // if fq has embedded label (frontend may save questions inline)
       if (fq.label) label = fq.label;
-      // if fq.localLabel exists (forms that reference a question with override)
       if (!label && fq.localLabel) label = fq.localLabel;
-      // if fq.questionId exists, fetch that question to obtain label
       if (!label && fq.questionId) {
         const qdoc = await getQuestionFromStore(fq.questionId).catch(()=>null);
         if (qdoc && qdoc.label) label = qdoc.label;
       }
-      // if still not found, but fq has nested 'id' and 'label' (some stores save full object)
       if (!label && fq.id && fq.label) label = fq.label;
       if (!label && fq.id && fq.localLabel) label = fq.localLabel;
-
-      // fallback: if no label yet, attempt to use fq.title/name fields
       if (!label && (fq.title || fq.name)) label = fq.title || fq.name;
-
       if (!label) continue;
 
-      // normalize some keys that might be used by client
       const possibleKeys = new Set();
       if (fq.questionId) possibleKeys.add(fq.questionId);
       if (fq.id) possibleKeys.add(fq.id);
-      // sometimes frontend sends keys prefixed with 'q_' + id or 'q_' + timestamp; include those
       if (fq.id) possibleKeys.add(`q_${fq.id}`);
       if (fq.questionId) possibleKeys.add(`q_${fq.questionId}`);
-      // include the label itself as possible incoming key (if frontend posts labels directly)
       possibleKeys.add(label);
       possibleKeys.add(label.toLowerCase());
-      // include localLabel
       if (fq.localLabel) possibleKeys.add(fq.localLabel);
 
       for (const k of possibleKeys) {
@@ -805,7 +801,7 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
       }
     }
 
-    // Also include global question bank entries (so that if formQuestions only references questionId, or frontend posts a questionId directly)
+    // Also include global question bank entries
     const questionBank = await listQuestionsFromStore();
     for (const q of (questionBank || [])) {
       if (!q || !q.id) continue;
@@ -817,24 +813,13 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
       }
     }
 
-    // Also include some known stable core keys mapping (best-effort)
-    // Many frontends use a fixed 'q_college' id; map it to a normalized label to help extraction.
-    idToLabel['q_college'] = idToLabel['q_college'] || 'College / Organization';
-    idToLabel['college'] = idToLabel['college'] || 'College / Organization';
-    idToLabel['College / Institute'] = idToLabel['College / Institute'] || 'College / Organization';
-    idToLabel['College / Institute'.toLowerCase()] = idToLabel['College / Institute'.toLowerCase()] || 'College / Organization';
-
-    // Now normalize rawAnswers into labelAnswers: label -> answer
+    // Normalize rawAnswers into labelAnswers: label -> answer
     const labelAnswers = {};
     for (const k of Object.keys(rawAnswers)) {
       const val = rawAnswers[k];
-      // try exact key lookup in idToLabel
       let label = idToLabel[k];
-      // try lowercase match
       if (!label && idToLabel[k.toLowerCase()]) label = idToLabel[k.toLowerCase()];
-      // if key looks like a label already, use it
       if (!label && typeof k === 'string' && k.trim().length > 0) label = k;
-      // fallback to using stored question bank lookup for stripped key
       if (!label) {
         const stripped = k.replace(/^q_/, '').replace(/[^a-z0-9]/gi, '').toLowerCase();
         const found = Object.keys(idToLabel).find(key => key && key.replace(/^q_/, '').replace(/[^a-z0-9]/gi, '').toLowerCase() === stripped);
@@ -845,16 +830,13 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     }
 
     // Extract mandatory fields into top-level properties (best-effort)
-    // Look for common variations in labels
     const findAndRemoveFirstMatch = (candidates) => {
       for (const cand of candidates) {
-        // try exact
         if (labelAnswers[cand] !== undefined) {
           const v = labelAnswers[cand];
           delete labelAnswers[cand];
           return v;
         }
-        // try case-insensitive match
         const foundKey = Object.keys(labelAnswers).find(k => (k || '').toString().toLowerCase().trim() === cand.toLowerCase().trim());
         if (foundKey) {
           const v = labelAnswers[foundKey];
@@ -862,7 +844,6 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
           return v;
         }
       }
-      // try fuzzy contains match
       const lowerKeys = Object.keys(labelAnswers).map(k => ({ k, kl: (k||'').toLowerCase() }));
       for (const cand of candidates) {
         for (const o of lowerKeys) {
@@ -880,36 +861,24 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     const emailCandidates = ['email address','email','e-mail','mail'];
     const phoneCandidates = ['phone number','phone','mobile','mobile number','contact number'];
     const resumeCandidates = ['upload resume / cv','upload resume','resume','cv','upload cv','upload resume/cv','upload resume / cv'];
-    const collegeCandidates = ['college / organization', 'college / institute', 'college / company', 'college', 'institute', 'organization', 'college / organisation', 'college / institute'];
 
     const extractedFullName = findAndRemoveFirstMatch(fullNameCandidates) || null;
     const extractedEmail = findAndRemoveFirstMatch(emailCandidates) || null;
     const extractedPhone = findAndRemoveFirstMatch(phoneCandidates) || null;
-    // For resume, prefer the uploaded resumeLink from Drive if present; otherwise look in labelAnswers
     const extractedResumeFromAnswers = findAndRemoveFirstMatch(resumeCandidates) || null;
     const finalResumeLink = resumeLink || extractedResumeFromAnswers || null;
-
-    // Extract college (new): prefer explicit 'college' top-level field in body if present
-    let extractedCollege = null;
-    if (req.body && req.body.college) {
-      extractedCollege = req.body.college;
-    } else {
-      extractedCollege = findAndRemoveFirstMatch(collegeCandidates) || null;
-    }
 
     // Build the response object that will be persisted
     const resp = {
       id: `resp_${Date.now()}`,
       openingId,
       openingTitle,
-      location: openingLocation || null, // NEW
+      location: openingLocation || null,
       source: src,
       fullName: extractedFullName || null,
       email: extractedEmail || null,
       phone: extractedPhone || null,
-      college: extractedCollege || null,    // NEW top-level college property
       resumeLink: finalResumeLink,
-      // keep the rest of answers (label -> answer), excluding the mandatory ones we extracted above
       answers: labelAnswers,
       createdAt: new Date().toISOString(),
       status: 'Applied',
@@ -917,7 +886,6 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     };
 
     // Prepare sheet row.
-    // We put timestamp, openingId, openingTitle, openingLocation, source, fullName, email, phone, college, resumeLink, JSON(answers)
     const rowVals = [
       new Date().toISOString(),
       openingId,
@@ -927,9 +895,8 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
       resp.fullName || '',
       resp.email || '',
       resp.phone || '',
-      resp.college || '',
       resp.resumeLink || '',
-      JSON.stringify(resp.answers || {}) // remaining answers as JSON
+      JSON.stringify(resp.answers || {})
     ];
 
     let sheetRange = null;
@@ -940,7 +907,6 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
         console.log('Appended to sheet, range=', sheetRange);
       } catch (err) {
         console.error('appendToSheet error', err && err.message);
-        // don't block response — we still persist locally/db
         resp.sheetRange = null;
       }
     }
@@ -948,7 +914,7 @@ app.post('/api/apply', upload.single('resume'), async (req, res) => {
     // persist to DB & file (file kept as legacy)
     try { await createResponseInStore(resp); } catch(e){ console.error('Failed to persist response to store', e && e.message); }
 
-    // Respond success (resumeLink always from Drive when present)
+    // Respond success
     return res.json({ ok: true, resumeLink: resp.resumeLink, sheetRange: resp.sheetRange });
   } catch (err) {
     console.error('Error in /api/apply', err && err.stack);
