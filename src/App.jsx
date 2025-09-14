@@ -62,13 +62,23 @@ const QUESTION_TYPES = [
      onChange(selectedArray)
      placeholder
      searchEnabled (bool)
+     openUp (bool) -> if true the dropdown opens upwards
 */
-function MultiSelectDropdown({ label, options = [], selected = [], onChange = () => {}, placeholder = "Select", searchEnabled = true }) {
+function MultiSelectDropdown({
+  label,
+  options = [],
+  selected = [],
+  onChange = () => {},
+  placeholder = "Select",
+  searchEnabled = true,
+  openUp = false
+}) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
 
   useEffect(() => {
     function onDocClick(e) {
+      // close when clicking outside the component root
       if (!e.target.closest || !e.target.closest('.msdd-root')) {
         setOpen(false);
       }
@@ -96,6 +106,11 @@ function MultiSelectDropdown({ label, options = [], selected = [], onChange = ()
     onChange([]);
   }
 
+  // position styles: if openUp -> attach dropdown to bottom of button and place above
+  const dropdownPositionStyle = openUp
+    ? { bottom: '100%', marginBottom: 8, left: 0, right: 0 } // open upwards
+    : { top: '100%', marginTop: 8, left: 0, right: 0 }; // default downwards
+
   return (
     <div className="relative msdd-root" style={{ minWidth: 220 }}>
       <div className="flex items-center justify-between">
@@ -105,13 +120,24 @@ function MultiSelectDropdown({ label, options = [], selected = [], onChange = ()
         </div>
       </div>
 
-      <button type="button" onClick={() => setOpen(o => !o)} className="mt-2 w-full text-left px-4 py-3 border rounded bg-white flex items-center justify-between">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="mt-2 w-full text-left px-4 py-3 border rounded bg-white flex items-center justify-between"
+      >
         <div className="text-sm text-gray-700">{selected.length ? `${selected.length} selected` : placeholder}</div>
         <div>{<Icon name="chevron" />}</div>
       </button>
 
       {open && (
-        <div className="absolute right-0 left-0 z-50 mt-2 bg-white border rounded shadow-lg p-3 max-h-64 overflow-auto">
+        <div
+          className="absolute z-50 bg-white border rounded shadow-lg p-3 max-h-64 overflow-auto"
+          style={{
+            ...dropdownPositionStyle,
+            // ensure we render above other modal/backdrop elements when required
+            zIndex: 9999
+          }}
+        >
           {searchEnabled && (
             <div className="mb-2">
               <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search..." className="w-full border p-2 rounded text-sm" />
@@ -917,21 +943,21 @@ export default function App() {
                         <div className="flex justify-between items-start">
                           {/* Left column: name/email + opening */}
                           <div style={{ minWidth: 0, maxWidth: 'calc(100% - 220px)' }}>
-                            <div className="font-semibold text-xl leading-tight">{candidateName}</div>
+                            <div className="font-semibold text-xl leading-tight break-words">{candidateName}</div>
                             {candidateEmail ? (
-                              <div className="text-sm text-gray-600 mt-1" style={{ textTransform: 'uppercase' }}>({candidateEmail})</div>
+                              <div className="text-sm text-gray-600 mt-1" style={{ textTransform: 'uppercase' }}>{candidateEmail}</div>
                             ) : null}
-                            <div className="text-sm text-gray-500 mt-3">
+                            <div className="text-sm text-gray-500 mt-3 break-words">
                               {opening.title || '—'} &nbsp;•&nbsp; {opening.location || ''}
                             </div>
-                            <div className="text-sm text-gray-500 mt-2">Source: {resp.source || 'unknown'}</div>
+                            <div className="text-sm text-gray-500 mt-2">Source: <span className="break-words inline-block max-w-[60%]">{resp.source || 'unknown'}</span></div>
 
-                            {/* Bottom-left row: Resume and response id */}
-                            <div className="mt-4 text-sm">
+                            {/* Bottom-left row: Resume and response id - separated and allowed to wrap so they don't overlap */}
+                            <div className="mt-4 text-sm flex flex-wrap items-center gap-2">
                               {resp.resumeLink ? (
                                 <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline mr-3">Resume</a>
                               ) : null}
-                              <span className="text-gray-500">| {resp.id}</span>
+                              <span className="text-gray-500 break-all text-xs">{resp.id}</span>
                             </div>
                           </div>
 
@@ -1043,6 +1069,7 @@ export default function App() {
                   <div className="mt-4 flex items-center justify-between">
                     <div />
                   </div>
+                  {/* Important: Status dropdown should open upwards (prevent page scrolling) */}
                   <MultiSelectDropdown
                     label="Status"
                     options={statusOptions}
@@ -1050,6 +1077,7 @@ export default function App() {
                     onChange={setFilterStatus}
                     placeholder="All Status"
                     searchEnabled={false}
+                    openUp={true}
                   />
                 </div>
               </aside>
