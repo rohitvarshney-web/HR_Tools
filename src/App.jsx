@@ -1404,7 +1404,7 @@ export default function App() {
                               {!PROTECTED_IDS.has(q.id) ? <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500 text-sm">Remove</button> : <div className="text-xs text-gray-400"></div>}
                               <label className="flex items-center gap-2 text-xs text-gray-500">
                                 <input type="checkbox" checked={!!q.pageBreak} onChange={() => togglePageBreak(op.id, q.id)} />
-                                Page break after
+                                Page Break
                               </label>
                             </div>
                           </div>
