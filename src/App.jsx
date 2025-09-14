@@ -1060,67 +1060,89 @@ export default function App() {
         {activeTab === "overview" && (
           <>
             <h1 className="text-2xl font-semibold mb-4">Overview</h1>
-            <div className="grid grid-cols-3 gap-6 mb-6">
-              <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="font-semibold">Openings</h2>
-                  <div className="text-sm opacity-60">{openings.length} openings</div>
-                </div>
-                <div className="space-y-4">
-                  {openings.map(op => (
-                    <div key={op.id} className="p-4 rounded-lg border border-gray-100">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <div className="font-semibold">{op.title}</div>
-                          <div className="text-sm text-gray-500">{op.department} • {op.location}</div>
-                          <div className="text-xs text-gray-400 mt-1">Created on {op.createdAt}</div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-xs text-gray-500">Responses: {responses.filter(r => r.openingId === op.id).length}</div>
-                          <div className="mt-2 flex gap-2">
-                            <button onClick={() => handleEditOpeningOpen(op)} className="px-2 py-1 border rounded text-sm">Edit</button>
-                            <button onClick={() => openFormModal(op.id)} className="px-2 py-1 bg-blue-600 text-white rounded text-sm">Open Form Editor</button>
+
+            {/* Outer overview container:
+                - fixed height (viewport minus top padding) so the page won't scroll while there are only these four cards
+                - it is overflow:auto so if more cards are added the page becomes scrollable
+            */}
+            <div style={{ maxHeight: 'calc(100vh - 7.5rem)', overflow: 'auto' }} className="pb-6">
+              {/* Grid of 4 cards (2x2 layout on wide screens). Each card is independently scrollable via maxHeight + overflowAuto */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                {/* Card 1: Openings (scrollable) */}
+                <div className="bg-white rounded-lg p-6 shadow-sm flex flex-col" style={{ maxHeight: 420 }}>
+                  <div className="flex justify-between items-center mb-4">
+                    <h2 className="font-semibold">Openings</h2>
+                    <div className="text-sm opacity-60">{openings.length} openings</div>
+                  </div>
+
+                  {/* Scrollable content inside the card */}
+                  <div className="overflow-auto" style={{ flex: 1, minHeight: 0 }}>
+                    <div className="space-y-4">
+                      {openings.map(op => (
+                        <div key={op.id} className="p-4 rounded-lg border border-gray-100">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <div className="font-semibold">{op.title}</div>
+                              <div className="text-sm text-gray-500">{op.department} • {op.location}</div>
+                              <div className="text-xs text-gray-400 mt-1">Created on {op.createdAt}</div>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-xs text-gray-500">Responses: {responses.filter(r => r.openingId === op.id).length}</div>
+                              <div className="mt-2 flex gap-2">
+                                <button onClick={() => handleEditOpeningOpen(op)} className="px-2 py-1 border rounded text-sm">Edit</button>
+                                <button onClick={() => openFormModal(op.id)} className="px-2 py-1 bg-blue-600 text-white rounded text-sm">Open Form Editor</button>
+                              </div>
+                            </div>
                           </div>
                         </div>
-                      </div>
+                      ))}
                     </div>
-                  ))}
+                  </div>
                 </div>
+
+                {/* Card 2: Quick Stats (scrollable if needed) */}
+                <aside className="bg-white rounded-lg p-6 shadow-sm" style={{ maxHeight: 420, overflow: 'auto' }}>
+                  <h3 className="font-semibold mb-3">Quick Stats</h3>
+                  <div className="text-sm text-gray-500">Candidates: {responses.length}</div>
+                  <div className="text-sm text-gray-500">Active Jobs: {openings.length}</div>
+                  <div className="text-sm text-gray-500">Talent Pools: 10</div>
+                  <div className="text-sm text-gray-500">Members: 3</div>
+                  {/* if you add more stats they will scroll inside this card */}
+                </aside>
+
+                {/* Card 3: Recent Responses (scrollable) */}
+                <div className="bg-white rounded-lg p-6 shadow-sm flex flex-col" style={{ maxHeight: 420 }}>
+                  <h3 className="font-semibold mb-4">Recent Responses</h3>
+                  <div className="overflow-auto" style={{ flex: 1, minHeight: 0 }}>
+                    <table className="w-full text-sm">
+                      <thead className="text-left text-gray-500 text-xs">
+                        <tr><th>Response ID</th><th>Opening</th><th>Source</th><th>Date</th></tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {responses.map(r => (
+                          <tr key={r.id}><td className="py-2">{r.id}</td><td>{openings.find(o => o.id === r.openingId)?.title || '—'}</td><td>{r.source}</td><td>{r.createdAt ? new Date(r.createdAt).toLocaleString() : ''}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Card 4: Onboarding Status (scrollable) */}
+                <aside className="bg-white rounded-lg p-6 shadow-sm" style={{ maxHeight: 420, overflow: 'auto' }}>
+                  <h3 className="font-semibold mb-3">Onboarding Status</h3>
+                  <ul className="space-y-3 text-sm text-gray-600">
+                    <li>Brooklyn Simmons — Reviewing Contract</li>
+                    <li>Darlene Robertson — Reviewing Contract</li>
+                    <li>Savannah Nguyen — Reviewing Contract</li>
+                    {/* extra items will scroll */}
+                  </ul>
+                </aside>
               </div>
 
-              <aside className="bg-white rounded-lg p-6 shadow-sm h-[420px]">
-                <h3 className="font-semibold mb-3">Quick Stats</h3>
-                <div className="text-sm text-gray-500">Candidates: {responses.length}</div>
-                <div className="text-sm text-gray-500">Active Jobs: {openings.length}</div>
-                <div className="text-sm text-gray-500">Talent Pools: 10</div>
-                <div className="text-sm text-gray-500">Members: 3</div>
-              </aside>
+              {/* If more "cards" are added below the grid, the outer container will scroll.
+                  Example: additional section (keeps page scrollable when content exceeds viewport) */}
+              {/* You can add more overview blocks here — they will cause the outer container to scroll. */}
             </div>
-
-            <section className="grid grid-cols-3 gap-6">
-              <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
-                <h3 className="font-semibold mb-4">Recent Responses</h3>
-                <table className="w-full text-sm">
-                  <thead className="text-left text-gray-500 text-xs">
-                    <tr><th>Response ID</th><th>Opening</th><th>Source</th><th>Date</th></tr>
-                  </thead>
-                  <tbody className="divide-y">
-                    {responses.map(r => (
-                      <tr key={r.id}><td>{r.id}</td><td>{openings.find(o => o.id === r.openingId)?.title || '—'}</td><td>{r.source}</td><td>{new Date(r.createdAt).toLocaleString()}</td></tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <aside className="bg-white rounded-lg p-6 shadow-sm">
-                <h3 className="font-semibold mb-3">Onboarding Status</h3>
-                <ul className="space-y-3 text-sm text-gray-600">
-                  <li>Brooklyn Simmons — Reviewing Contract</li>
-                  <li>Darlene Robertson — Reviewing Contract</li>
-                  <li>Savannah Nguyen — Reviewing Contract</li>
-                </ul>
-              </aside>
-            </section>
           </>
         )}
 
