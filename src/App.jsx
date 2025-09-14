@@ -985,6 +985,24 @@ export default function App() {
   }, [openings, jobsSearch, jobsFilterLocations, jobsFilterDepartments]);
 
   /* -------------------------
+     Clear all helper functions for filters
+  ------------------------- */
+  function clearAllJobsFilters() {
+    setJobsSearch("");
+    setJobsFilterLocations([]);
+    setJobsFilterDepartments([]);
+  }
+
+  function clearAllHiringFilters() {
+    setSearchQuery("");
+    setFilterOpenings([]);
+    setFilterLocations([]);
+    setFilterDepartments([]);
+    setFilterSources([]);
+    setFilterStatus([]);
+  }
+
+  /* -------------------------
      Render gating
   ------------------------- */
   if (!authChecked) {
@@ -1157,7 +1175,10 @@ export default function App() {
 
               {/* RIGHT: Filters pane - sticky */}
               <aside className="bg-white rounded-lg p-6 shadow-sm sticky top-6 h-[calc(100vh-6rem)]">
-                <h3 className="font-semibold mb-4">Filters</h3>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold">Filters</h3>
+                  <button onClick={clearAllJobsFilters} className="text-sm text-blue-600 hover:underline">Clear all</button>
+                </div>
 
                 <div className="space-y-4">
                   <MultiSelectDropdown
@@ -1275,7 +1296,10 @@ export default function App() {
 
               {/* RIGHT: Filters pane - sticky (same as Jobs) */}
               <aside className="bg-white rounded-lg p-6 shadow-sm sticky top-6 h-[calc(100vh-6rem)]">
-                <h3 className="font-semibold mb-4">Filters</h3>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold">Filters</h3>
+                  <button onClick={clearAllHiringFilters} className="text-sm text-blue-600 hover:underline">Clear all</button>
+                </div>
 
                 <div className="space-y-4">
                   <MultiSelectDropdown
