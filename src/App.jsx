@@ -1002,7 +1002,7 @@ export default function App() {
   /* -------------------------
      UI
      - Sidebar is sticky full-height
-     - Main area is overflow-hidden; column lists are internally scrollable
+     - Main area is overflow-hidden; inner panes are min-h-0 so children can scroll
   ------------------------- */
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800 flex">
@@ -1036,8 +1036,8 @@ export default function App() {
         </div>
       </aside>
 
-      {/* Main content area - do not let entire page scroll; inner panes will scroll */}
-      <main className="flex-1 p-8 overflow-hidden">
+      {/* Main content area - ensure min-h-0 so children can scroll */}
+      <main className="flex-1 p-8 overflow-hidden min-h-0">
         {/* OVERVIEW Tab */}
         {activeTab === "overview" && (
           <>
@@ -1115,9 +1115,9 @@ export default function App() {
             </header>
 
             {/* grid: center scrollable list, right filters sticky */}
-            <div className="grid grid-cols-3 gap-6 h-[calc(100vh-6rem)]">
+            <div className="grid grid-cols-3 gap-6 h-[calc(100vh-6rem)] min-h-0">
               {/* CENTER: column with top search + scrollable list */}
-              <div className="col-span-2 bg-white rounded-lg shadow-sm flex flex-col">
+              <div className="col-span-2 bg-white rounded-lg shadow-sm flex flex-col min-h-0">
                 {/* header area (search) - fixed inside this column */}
                 <div className="p-6 border-b">
                   <div className="mb-4">
@@ -1133,7 +1133,7 @@ export default function App() {
                 </div>
 
                 {/* scrollable openings list */}
-                <div className="p-6 overflow-auto" style={{ flex: 1 }}>
+                <div className="p-6 overflow-auto" style={{ flex: 1, minHeight: 0 }}>
                   <div className="space-y-4">
                     {filteredOpeningsForJobs.length === 0 && <div className="text-sm text-gray-500">No openings match the selected filters or search.</div>}
 
@@ -1150,7 +1150,6 @@ export default function App() {
                         </div>
                       </div>
                     ))}
-                    {/* small spacer to give breathing room */}
                     <div style={{ height: 40 }} />
                   </div>
                 </div>
@@ -1189,9 +1188,9 @@ export default function App() {
           <>
             <h1 className="text-2xl font-semibold mb-6">Hiring</h1>
 
-            <div className="grid grid-cols-3 gap-6 h-[calc(100vh-6rem)]">
+            <div className="grid grid-cols-3 gap-6 h-[calc(100vh-6rem)] min-h-0">
               {/* CENTER: candidates column with search + scrollable list */}
-              <div className="col-span-2 bg-white rounded-lg shadow-sm flex flex-col">
+              <div className="col-span-2 bg-white rounded-lg shadow-sm flex flex-col min-h-0">
                 <div className="p-6 border-b">
                   <div className="mb-4">
                     <input
@@ -1206,7 +1205,7 @@ export default function App() {
                 </div>
 
                 {/* Scrollable candidates list */}
-                <div className="p-6 overflow-auto" style={{ flex: 1 }}>
+                <div className="p-6 overflow-auto" style={{ flex: 1, minHeight: 0 }}>
                   <div className="space-y-4">
                     {filteredResponses.length === 0 && <div className="text-sm text-gray-500">No candidates match the selected filters or search.</div>}
 
