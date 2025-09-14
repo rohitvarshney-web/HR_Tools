@@ -1025,9 +1025,9 @@ export default function App() {
       <aside className="w-64 bg-gray-900 text-gray-100 p-6 flex flex-col justify-between h-screen sticky top-0">
         <div>
           <div className="flex items-center gap-3 mb-6">
-            <div className="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center font-bold">SV</div>
+            <div className="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center font-bold">{user.initials}</div>
             <div>
-              <div className="text-sm font-semibold">StampMyVisa</div>
+              <div className="text-sm font-semibold">{user.name}</div>
               {user ? (
                 <>
                   <div className="text-xs opacity-80">{user.email} <span className="text-xs text-blue-300">({user.role})</span></div>
