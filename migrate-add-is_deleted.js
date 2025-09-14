@@ -1,4 +1,3 @@
-// migrate-add-is_deleted.js
 require('dotenv').config();
 const { MongoClient } = require('mongodb');
 
