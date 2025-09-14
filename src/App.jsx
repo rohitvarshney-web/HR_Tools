@@ -1405,7 +1405,7 @@ export default function App() {
                               {!PROTECTED_IDS.has(q.id) ? <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500 text-sm">Remove</button> : <div className="text-xs text-gray-400">Protected</div>}
                               <label className="flex items-center gap-2 text-xs text-gray-500">
                                 <input type="checkbox" checked={!!q.pageBreak} onChange={() => togglePageBreak(op.id, q.id)} />
-                                Page break after
+                                Page break
                               </label>
                             </div>
                           </div>
@@ -1545,7 +1545,6 @@ export default function App() {
 
               <div className="flex items-center gap-2 mt-3">
                 <input id="req" type="checkbox" checked={customQ.required} onChange={(e) => setCustomQ({ ...customQ, required: e.target.checked })} />
-                <label htmlFor="req" className="text-sm">Required</label>
               </div>
 
               <div className="flex justify-end gap-2 mt-4">
