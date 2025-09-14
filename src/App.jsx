@@ -1001,11 +1001,13 @@ export default function App() {
 
   /* -------------------------
      UI
+     - Sidebar is sticky full-height
+     - Main area is overflow-hidden; column lists are internally scrollable
   ------------------------- */
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800 flex">
-      {/* Sidebar */}
-      <aside className="w-64 bg-gray-900 text-gray-100 p-6 flex flex-col justify-between">
+      {/* Sidebar - sticky full-height so it never scrolls */}
+      <aside className="w-64 bg-gray-900 text-gray-100 p-6 flex flex-col justify-between h-screen sticky top-0">
         <div>
           <div className="flex items-center gap-3 mb-6">
             <div className="w-12 h-12 rounded-full bg-blue-600 flex items-center justify-center font-bold">SV</div>
@@ -1034,8 +1036,9 @@ export default function App() {
         </div>
       </aside>
 
-      {/* Main content */}
-      <main className="flex-1 p-8 overflow-auto">
+      {/* Main content area - do not let entire page scroll; inner panes will scroll */}
+      <main className="flex-1 p-8 overflow-hidden">
+        {/* OVERVIEW Tab */}
         {activeTab === "overview" && (
           <>
             <h1 className="text-2xl font-semibold mb-4">Overview</h1>
@@ -1067,7 +1070,7 @@ export default function App() {
                 </div>
               </div>
 
-              <aside className="bg-white rounded-lg p-6 shadow-sm">
+              <aside className="bg-white rounded-lg p-6 shadow-sm h-[420px]">
                 <h3 className="font-semibold mb-3">Quick Stats</h3>
                 <div className="text-sm text-gray-500">Candidates: {responses.length}</div>
                 <div className="text-sm text-gray-500">Active Jobs: {openings.length}</div>
@@ -1103,6 +1106,7 @@ export default function App() {
           </>
         )}
 
+        {/* JOBS Tab */}
         {activeTab === "jobs" && (
           <>
             <header className="flex items-center justify-between mb-6">
@@ -1110,41 +1114,50 @@ export default function App() {
               <button onClick={openCreate} className="bg-blue-600 text-white px-4 py-2 rounded inline-flex items-center gap-2">{<Icon name="plus" />} New Opening</button>
             </header>
 
-            <div className="grid grid-cols-3 gap-6">
-              <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
-                <div className="mb-4">
-                  <input
-                    value={jobsSearch}
-                    onChange={(e) => setJobsSearch(e.target.value)}
-                    placeholder="Search jobs by title, location, department..."
-                    className="w-full border p-3 rounded"
-                  />
-                  <div className="text-xs text-gray-400 mt-2">Search filters job title, department or location.</div>
+            {/* grid: center scrollable list, right filters sticky */}
+            <div className="grid grid-cols-3 gap-6 h-[calc(100vh-6rem)]">
+              {/* CENTER: column with top search + scrollable list */}
+              <div className="col-span-2 bg-white rounded-lg shadow-sm flex flex-col">
+                {/* header area (search) - fixed inside this column */}
+                <div className="p-6 border-b">
+                  <div className="mb-4">
+                    <input
+                      value={jobsSearch}
+                      onChange={(e) => setJobsSearch(e.target.value)}
+                      placeholder="Search jobs by title, location, department..."
+                      className="w-full border p-3 rounded"
+                    />
+                    <div className="text-xs text-gray-400 mt-2">Search filters job title, department or location.</div>
+                  </div>
+                  <h2 className="font-semibold mb-0">Openings</h2>
                 </div>
 
-                <h2 className="font-semibold mb-4">Openings</h2>
-                
-                <div className="space-y-4">
-                  {filteredOpeningsForJobs.length === 0 && <div className="text-sm text-gray-500">No openings match the selected filters or search.</div>}
+                {/* scrollable openings list */}
+                <div className="p-6 overflow-auto" style={{ flex: 1 }}>
+                  <div className="space-y-4">
+                    {filteredOpeningsForJobs.length === 0 && <div className="text-sm text-gray-500">No openings match the selected filters or search.</div>}
 
-                  {filteredOpeningsForJobs.map(op => (
-                    <div key={op.id} className="p-4 rounded-lg border flex justify-between items-center">
-                      <div>
-                        <div className="font-semibold">{op.title}</div>
-                        <div className="text-sm text-gray-500">{op.department} • {op.location}</div>
+                    {filteredOpeningsForJobs.map(op => (
+                      <div key={op.id} className="p-4 rounded-lg border flex justify-between items-center">
+                        <div>
+                          <div className="font-semibold">{op.title}</div>
+                          <div className="text-sm text-gray-500">{op.department} • {op.location}</div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <button onClick={() => handleEditOpeningOpen(op)} className="px-3 py-1 border rounded">Edit</button>
+                          <button onClick={() => openFormModal(op.id)} className="px-3 py-1 bg-blue-600 text-white rounded">Form Editor</button>
+                          <button onClick={() => handleDeleteOpening(op.id)} className="text-red-600 flex items-center gap-1"><Icon name="trash" /> Delete</button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <button onClick={() => handleEditOpeningOpen(op)} className="px-3 py-1 border rounded">Edit</button>
-                        <button onClick={() => openFormModal(op.id)} className="px-3 py-1 bg-blue-600 text-white rounded">Form Editor</button>
-                        <button onClick={() => handleDeleteOpening(op.id)} className="text-red-600 flex items-center gap-1"><Icon name="trash" /> Delete</button>
-                      </div>
-                    </div>
-                  ))}
+                    ))}
+                    {/* small spacer to give breathing room */}
+                    <div style={{ height: 40 }} />
+                  </div>
                 </div>
               </div>
 
-              {/* Filters aside (same style as hiring) */}
-              <aside className="bg-white rounded-lg p-6 shadow-sm">
+              {/* RIGHT: Filters pane - sticky */}
+              <aside className="bg-white rounded-lg p-6 shadow-sm sticky top-6 h-[calc(100vh-6rem)]">
                 <h3 className="font-semibold mb-4">Filters</h3>
 
                 <div className="space-y-4">
@@ -1171,92 +1184,98 @@ export default function App() {
           </>
         )}
 
+        {/* HIRING Tab */}
         {activeTab === "hiring" && (
           <>
             <h1 className="text-2xl font-semibold mb-6">Hiring</h1>
 
-            <div className="grid grid-cols-3 gap-6">
-              {/* Main candidates column */}
-              <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
-                {/* Search box */}
-                <div className="mb-4">
-                  <input
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search candidates by name, email, college, opening, source or id..."
-                    className="w-full border p-3 rounded"
-                  />
-                  <div className="text-xs text-gray-400 mt-2">Search searches name, email, college, opening title, source and response id.</div>
+            <div className="grid grid-cols-3 gap-6 h-[calc(100vh-6rem)]">
+              {/* CENTER: candidates column with search + scrollable list */}
+              <div className="col-span-2 bg-white rounded-lg shadow-sm flex flex-col">
+                <div className="p-6 border-b">
+                  <div className="mb-4">
+                    <input
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search candidates by name, email, college, opening, source or id..."
+                      className="w-full border p-3 rounded"
+                    />
+                    <div className="text-xs text-gray-400 mt-2">Search searches name, email, college, opening title, source and response id.</div>
+                  </div>
+                  <h2 className="font-semibold mb-0">Candidates</h2>
                 </div>
 
-                <h2 className="font-semibold mb-4">Candidates</h2>
+                {/* Scrollable candidates list */}
+                <div className="p-6 overflow-auto" style={{ flex: 1 }}>
+                  <div className="space-y-4">
+                    {filteredResponses.length === 0 && <div className="text-sm text-gray-500">No candidates match the selected filters or search.</div>}
 
-                <div className="space-y-4">
-                  {filteredResponses.length === 0 && <div className="text-sm text-gray-500">No candidates match the selected filters or search.</div>}
-
-                  {filteredResponses.map(resp => {
-                    const opening = openings.find(o => o.id === resp.openingId) || {};
-                    const candidateName = resp.fullName || (resp.answers && (resp.answers.fullname || resp.answers.name)) || 'Candidate';
-                    const candidateEmail = (resp.email || (resp.answers && resp.answers.email) || '').trim();
-                    const candidateCollege = extractCandidateCollege(resp);
-                    return (
-                      <div key={resp.id} className="p-6 border rounded relative bg-white min-h-[130px]">
-                        <div className="flex justify-between items-start">
-                          {/* Left column: name/email + opening */}
-                          <div style={{ minWidth: 0, maxWidth: 'calc(100% - 220px)' }}>
-                            <div className="font-semibold text-xl leading-tight break-words">{candidateName}</div>
-                            {candidateEmail ? (
-                              <div className="text-sm text-gray-600 mt-1" style={{ textTransform: 'uppercase' }}>{candidateEmail}</div>
-                            ) : null}
-                            <div className="text-sm text-gray-500 mt-3 break-words">
-                              {opening.title || '—'} &nbsp;•&nbsp; {opening.location || ''}
-                            </div>
-                            <div className="text-sm text-gray-500 mt-2">Source: <span className="break-words inline-block max-w-[60%]">{resp.source || 'unknown'}</span></div>
-
-                            {/* College display */}
-                            {candidateCollege ? (
-                              <div className="text-sm text-gray-600 mt-2">College: <span className="font-medium">{candidateCollege}</span></div>
-                            ) : null}
-
-                            {/* Bottom-left row: Resume and response id */}
-                            <div className="mt-4 text-sm flex flex-wrap items-center gap-2">
-                              {resp.resumeLink ? (
-                                <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline mr-3">Resume</a>
+                    {filteredResponses.map(resp => {
+                      const opening = openings.find(o => o.id === resp.openingId) || {};
+                      const candidateName = resp.fullName || (resp.answers && (resp.answers.fullname || resp.answers.name)) || 'Candidate';
+                      const candidateEmail = (resp.email || (resp.answers && resp.answers.email) || '').trim();
+                      const candidateCollege = extractCandidateCollege(resp);
+                      return (
+                        <div key={resp.id} className="p-6 border rounded relative bg-white min-h-[130px]">
+                          <div className="flex justify-between items-start">
+                            {/* Left column: name/email + opening */}
+                            <div style={{ minWidth: 0, maxWidth: 'calc(100% - 220px)' }}>
+                              <div className="font-semibold text-xl leading-tight break-words">{candidateName}</div>
+                              {candidateEmail ? (
+                                <div className="text-sm text-gray-600 mt-1" style={{ textTransform: 'uppercase' }}>{candidateEmail}</div>
                               ) : null}
-                              <span className="text-gray-500 break-all text-xs">{resp.id}</span>
+                              <div className="text-sm text-gray-500 mt-3 break-words">
+                                {opening.title || '—'} &nbsp;•&nbsp; {opening.location || ''}
+                              </div>
+                              <div className="text-sm text-gray-500 mt-2">Source: <span className="break-words inline-block max-w-[60%]">{resp.source || 'unknown'}</span></div>
+
+                              {/* College display */}
+                              {candidateCollege ? (
+                                <div className="text-sm text-gray-600 mt-2">College: <span className="font-medium">{candidateCollege}</span></div>
+                              ) : null}
+
+                              {/* Bottom-left row: Resume and response id */}
+                              <div className="mt-4 text-sm flex flex-wrap items-center gap-2">
+                                {resp.resumeLink ? (
+                                  <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline mr-3">Resume</a>
+                                ) : null}
+                                <span className="text-gray-500 break-all text-xs">{resp.id}</span>
+                              </div>
+                            </div>
+
+                            {/* Right column: status selector */}
+                            <div className="w-[200px] flex flex-col items-end">
+                              <div className="text-xs text-gray-500 mb-1">Status</div>
+                              <select
+                                value={resp.status || 'Applied'}
+                                onChange={(e) => updateCandidateStatus(resp.id, e.target.value)}
+                                className="border p-2 rounded"
+                              >
+                                <option>Applied</option>
+                                <option>Screening</option>
+                                <option>Interview</option>
+                                <option>Offer</option>
+                                <option>Hired</option>
+                                <option>Rejected</option>
+                              </select>
                             </div>
                           </div>
 
-                          {/* Right column: status selector */}
-                          <div className="w-[200px] flex flex-col items-end">
-                            <div className="text-xs text-gray-500 mb-1">Status</div>
-                            <select
-                              value={resp.status || 'Applied'}
-                              onChange={(e) => updateCandidateStatus(resp.id, e.target.value)}
-                              className="border p-2 rounded"
-                            >
-                              <option>Applied</option>
-                              <option>Screening</option>
-                              <option>Interview</option>
-                              <option>Offer</option>
-                              <option>Hired</option>
-                              <option>Rejected</option>
-                            </select>
+                          {/* Applied-at: anchored bottom-right */}
+                          <div className="absolute right-6 bottom-4 text-sm text-gray-500">
+                            Applied at: {resp.createdAt ? new Date(resp.createdAt).toLocaleString() : ''}
                           </div>
                         </div>
+                      );
+                    })}
 
-                        {/* Applied-at: anchored bottom-right */}
-                        <div className="absolute right-6 bottom-4 text-sm text-gray-500">
-                          Applied at: {resp.createdAt ? new Date(resp.createdAt).toLocaleString() : ''}
-                        </div>
-                      </div>
-                    );
-                  })}
+                    <div style={{ height: 40 }} />
+                  </div>
                 </div>
               </div>
 
-              {/* RIGHT SIDE: Filters aside */}
-              <aside className="bg-white rounded-lg p-6 shadow-sm">
+              {/* RIGHT: Filters pane - sticky (same as Jobs) */}
+              <aside className="bg-white rounded-lg p-6 shadow-sm sticky top-6 h-[calc(100vh-6rem)]">
                 <h3 className="font-semibold mb-4">Filters</h3>
 
                 <div className="space-y-4">
@@ -1736,10 +1755,6 @@ export default function App() {
 
 /* -------------------------
    PageRenderer component for public form pagination
-   - receives pageQuestions: array of questions for current page
-   - allSchema: entire schema (used for validation on submit)
-   - pageIndex, totalPages, onBack, onNext
-   - this renders inputs and the appropriate buttons (Back/Next/Submit Form)
   ------------------------- */
 function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, totalPages = 1, onBack = () => {}, onNext = () => {}, isLastPage = true }) {
   // We purposely don't manage component-level form state here -- the parent form submission
