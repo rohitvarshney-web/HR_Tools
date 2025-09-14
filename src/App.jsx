@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { v4 as uuidv4 } from "uuid";
 
 /* Small inline icons component */
@@ -10,6 +10,7 @@ const Icon = ({ name, className = "w-5 h-5 inline-block" }) => {
     ),
     plus: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 5v14M5 12h14"/></svg>),
     trash: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 7h12M9 7V4h6v3m-7 4v9m4-9v9"/></svg>),
+    chevron: (<svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 9l6 6 6-6"/></svg>)
   };
   return icons[name] || null;
 };
@@ -22,6 +23,7 @@ const CORE_QUESTIONS = {
   email: { id: "q_email", type: "email", label: "Email address", required: true },
   phone: { id: "q_phone", type: "short_text", label: "Phone number", required: true },
   resume: { id: "q_resume", type: "file", label: "Upload resume / CV", required: true },
+  college: { id: "q_college", type: "short_text", label: "College / Institute", required: true }, // new core question
 };
 const PROTECTED_IDS = new Set(Object.values(CORE_QUESTIONS).map(q => q.id));
 
@@ -33,6 +35,7 @@ const templateQuestions = [
   CORE_QUESTIONS.email,
   CORE_QUESTIONS.phone,
   CORE_QUESTIONS.resume,
+  CORE_QUESTIONS.college, // include college as core in templates
   { id: uuidv4(), type: "number", label: "Years of experience" },
   { id: uuidv4(), type: "url", label: "LinkedIn / Portfolio URL" },
   { id: uuidv4(), type: "dropdown", label: "How did you hear about us?", options: ["LinkedIn", "Internshala", "Referral"] },
@@ -51,6 +54,109 @@ const QUESTION_TYPES = [
   { value: "url", label: "URL" },
   { value: "date", label: "Date" },
 ];
+
+/* -------------------------
+   MultiSelectDropdown
+   - props:
+     label (string)
+     options: [{ value, label }]
+     selected: Set or array of values
+     onChange(selectedArray)
+     placeholder
+     searchEnabled (bool)
+     openUp (bool) -> if true the dropdown opens upwards
+*/
+function MultiSelectDropdown({
+  label,
+  options = [],
+  selected = [],
+  onChange = () => {},
+  placeholder = "Select",
+  searchEnabled = true,
+  openUp = false
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    function onDocClick(e) {
+      // close when clicking outside the component root
+      if (!e.target.closest || !e.target.closest('.msdd-root')) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener('click', onDocClick);
+    return () => document.removeEventListener('click', onDocClick);
+  }, []);
+
+  const selectedSet = new Set(selected || []);
+
+  const filtered = useMemo(() => {
+    const q = (query || "").toLowerCase().trim();
+    if (!q) return options;
+    return options.filter(o => (o.label || "").toLowerCase().includes(q) || (o.value || "").toString().toLowerCase().includes(q));
+  }, [options, query]);
+
+  function toggleValue(v) {
+    const s = new Set(selectedSet);
+    if (s.has(v)) s.delete(v);
+    else s.add(v);
+    onChange(Array.from(s));
+  }
+
+  function clearAll() {
+    onChange([]);
+  }
+
+  // position styles: if openUp -> attach dropdown to bottom of button and place above
+  const dropdownPositionStyle = openUp
+    ? { bottom: '100%', marginBottom: 8, left: 0, right: 0 } // open upwards
+    : { top: '100%', marginTop: 8, left: 0, right: 0 }; // default downwards
+
+  return (
+    <div className="relative msdd-root" style={{ minWidth: 220 }}>
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium">{label}</div>
+        <div className="text-sm">
+          <button type="button" onClick={clearAll} className="text-blue-600 hover:underline">Clear</button>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="mt-2 w-full text-left px-4 py-3 border rounded bg-white flex items-center justify-between"
+      >
+        <div className="text-sm text-gray-700">{selected.length ? `${selected.length} selected` : placeholder}</div>
+        <div>{<Icon name="chevron" />}</div>
+      </button>
+
+      {open && (
+        <div
+          className="absolute z-50 bg-white border rounded shadow-lg p-3 max-h-64 overflow-auto"
+          style={{
+            ...dropdownPositionStyle,
+            zIndex: 9999
+          }}
+        >
+          {searchEnabled && (
+            <div className="mb-2">
+              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search..." className="w-full border p-2 rounded text-sm" />
+            </div>
+          )}
+          <div className="space-y-2">
+            {filtered.length === 0 ? (<div className="text-xs text-gray-400">No results</div>) : filtered.map(opt => (
+              <label key={opt.value} className="flex items-center gap-2 cursor-pointer text-sm">
+                <input checked={selectedSet.has(opt.value)} onChange={() => toggleValue(opt.value)} type="checkbox" className="h-4 w-4" />
+                <span>{opt.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /* -------------------------
    Simple Login Page Component
@@ -84,38 +190,40 @@ export default function App() {
   const API = process.env.REACT_APP_API_URL || 'https://hr-tools-backend.onrender.com';
   const BACKEND = API;
 
-  console.log('Using API endpoint:', API);
-
   const [openings, setOpenings] = useState([]);
   const [activeTab, setActiveTab] = useState("overview");
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newOpening, setNewOpening] = useState({ title: "", location: "Delhi", department: "", preferredSources: [], durationMins: 30 });
-  const [forms, setForms] = useState({}); // keyed by openingId: { questions: [...], meta: {...} }
+  const [forms, setForms] = useState({});
   const [responses, setResponses] = useState([]);
-
-  // Question bank (server-backed)
   const [questionBank, setQuestionBank] = useState([]);
 
-  // auth / user
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
 
-  // custom question modal (only shown from inside form modal)
+  // Custom question modal + form editor states
   const [showCustomModal, setShowCustomModal] = useState(false);
   const [customOpeningId, setCustomOpeningId] = useState(null);
   const [customQ, setCustomQ] = useState({ label: "", type: "short_text", required: false, optionsText: "" });
 
-  // edit opening
   const [showEdit, setShowEdit] = useState(false);
   const [editingOpening, setEditingOpening] = useState(null);
 
-  // public form modal
   const [publicView, setPublicView] = useState(null);
 
-  // Form Editor modal per opening
   const [showFormModal, setShowFormModal] = useState(false);
   const [formModalOpeningId, setFormModalOpeningId] = useState(null);
+
+  // Filters state (all arrays of selected values)
+  const [filterOpenings, setFilterOpenings] = useState([]);
+  const [filterLocations, setFilterLocations] = useState([]);
+  const [filterDepartments, setFilterDepartments] = useState([]);
+  const [filterSources, setFilterSources] = useState([]);
+  const [filterStatus, setFilterStatus] = useState([]);
+
+  // Search query for candidate list (search across name, email, college, opening title, source, response id)
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -181,29 +289,26 @@ export default function App() {
      Helper: ensure core fields exist in a form object (mutating copy)
   ------------------------- */
   function ensureCoreFieldsInForm(formObj) {
-    // formObj shape: { questions: [...], meta: {...} }
-    // ensure required meta.coreFields exists
     const existingIds = new Set((formObj.questions || []).map(q => q.id));
-    const coreOrder = [CORE_QUESTIONS.fullName, CORE_QUESTIONS.email, CORE_QUESTIONS.phone, CORE_QUESTIONS.resume];
-    // Insert any missing core question at start (preserve order)
+    // include college in core order
+    const coreOrder = [CORE_QUESTIONS.fullName, CORE_QUESTIONS.email, CORE_QUESTIONS.phone, CORE_QUESTIONS.resume, CORE_QUESTIONS.college];
     const missing = coreOrder.filter(cq => !existingIds.has(cq.id)).map(cq => ({ ...cq }));
     if (missing.length) {
       formObj.questions = [...missing, ...(formObj.questions || [])];
     }
-    // Always mark required
     formObj.questions = (formObj.questions || []).map(q => {
       if (PROTECTED_IDS.has(q.id)) {
         return { ...q, required: true };
       }
       return q;
     });
-    // Ensure meta.coreFields mapping
     formObj.meta = formObj.meta || {};
     formObj.meta.coreFields = formObj.meta.coreFields || {
       fullNameId: CORE_QUESTIONS.fullName.id,
       emailId: CORE_QUESTIONS.email.id,
       phoneId: CORE_QUESTIONS.phone.id,
       resumeId: CORE_QUESTIONS.resume.id,
+      collegeId: CORE_QUESTIONS.college.id,
     };
     return formObj;
   }
@@ -216,22 +321,17 @@ export default function App() {
       if (!localStorage.getItem('token')) return;
       const rows = await apiFetch('/api/openings');
       setOpenings(rows);
-    } catch (err) {
-      console.error('loadOpenings', err);
-    }
+    } catch (err) { console.error('loadOpenings', err); }
   }
 
   async function loadResponses() {
     try {
       if (!localStorage.getItem('token')) return;
       const rows = await apiFetch('/api/responses');
-      setResponses(rows);
-    } catch (err) {
-      console.error('loadResponses', err);
-    }
+      setResponses(rows || []);
+    } catch (err) { console.error('loadResponses', err); }
   }
 
-  // load forms from server and map them into forms state keyed by openingId
   async function loadForms() {
     try {
       if (!localStorage.getItem('token')) return;
@@ -241,28 +341,22 @@ export default function App() {
         const obj = { questions: (f.data && f.data.questions) || [], meta: (f.data && f.data.meta) || null, serverFormId: f.id, created_at: f.created_at, updated_at: f.updated_at, openingId: f.openingId };
         map[f.openingId] = ensureCoreFieldsInForm(obj);
       });
-      // For openings without a saved server form, keep an initialized local form with core fields
       (openings || []).forEach(op => {
         if (!map[op.id]) {
-          const base = { questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } };
+          const base = { questions: templateQuestions.slice(0, 5).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } };
           map[op.id] = base;
         }
       });
       setForms(map);
-    } catch (err) {
-      console.error('loadForms', err);
-    }
+    } catch (err) { console.error('loadForms', err); }
   }
 
-  // load question bank
   async function loadQuestionBank() {
     try {
       if (!localStorage.getItem('token')) return;
       const rows = await apiFetch('/api/questions');
       setQuestionBank(rows || []);
-    } catch (err) {
-      console.error('loadQuestionBank', err);
-    }
+    } catch (err) { console.error('loadQuestionBank', err); }
   }
 
   /* -------------------------
@@ -284,9 +378,8 @@ export default function App() {
     };
 
     try {
-      const token = localStorage.getItem('token');
       let created;
-      if (!token) {
+      if (!localStorage.getItem('token')) {
         created = { id: `op_${Date.now()}`, ...payload, createdAt: new Date().toISOString() };
         setOpenings(s => [created, ...s]);
       } else {
@@ -294,8 +387,7 @@ export default function App() {
         created = { id: res.id, ...payload, createdAt: res.createdAt || new Date().toISOString() };
         setOpenings(s => [created, ...s]);
       }
-      // initialize local form for this opening with core fields + small template
-      setForms(f => ({ ...f, [created.id]: ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } }) }));
+      setForms(f => ({ ...f, [created.id]: ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 5).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } }) }));
       setShowCreate(false);
     } catch (err) {
       console.error('create opening', err);
@@ -311,7 +403,6 @@ export default function App() {
   function handleSaveEdit(e) {
     e.preventDefault();
     setOpenings((s) => s.map(op => op.id === editingOpening.id ? editingOpening : op));
-    // Persist edit if authenticated
     if (localStorage.getItem('token')) {
       apiFetch(`/api/openings/${editingOpening.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editingOpening) })
         .catch(err => console.error('Failed to persist opening edit', err));
@@ -325,7 +416,6 @@ export default function App() {
       if (localStorage.getItem('token')) {
         await apiFetch(`/api/openings/${id}`, { method: 'DELETE' });
         setOpenings(s => s.filter(op => op.id !== id));
-        // refresh forms map
         await loadForms();
       } else {
         setOpenings(s => s.filter(op => op.id !== id));
@@ -336,21 +426,13 @@ export default function App() {
     }
   }
 
-  // addQuestion respects server-provided question IDs (if present) and blocks duplicates of protected ids
   function addQuestion(openingId, q) {
     const question = { ...q, id: q.id || uuidv4() };
     setForms((f) => {
       const existing = f[openingId] || { questions: [], meta: null };
       const exists = (existing.questions || []).some(x => x.id === question.id);
-      if (exists) {
-        // already present — ignore
-        return f;
-      }
-      // don't allow adding protected question duplicates (core questions are already present)
-      if (PROTECTED_IDS.has(question.id)) {
-        // if not present, ensureCoreFieldsInForm will add them; but if already present or protected, ignore
-        return { ...f };
-      }
+      if (exists) return f;
+      if (PROTECTED_IDS.has(question.id)) return { ...f };
       const newQuestions = [...(existing.questions || []), question];
       return { ...f, [openingId]: { ...existing, questions: newQuestions } };
     });
@@ -377,14 +459,12 @@ export default function App() {
     });
   }
 
-  // open custom modal (only used inside form editor modal)
   function openCustomModalFor(openingId) {
     setCustomOpeningId(openingId);
     setCustomQ({ label: "", type: "short_text", required: false, optionsText: "" });
     setShowCustomModal(true);
   }
 
-  // Create custom question; persist to server bank if signed in, then add to local form
   async function handleAddCustomQuestion(e) {
     e.preventDefault();
     const options = customQ.optionsText.split("\n").map(s => s.trim()).filter(Boolean);
@@ -405,36 +485,27 @@ export default function App() {
     }
   }
 
-  // Save form without publishing (creates/updates server form and sets meta.coreFields)
   async function handleSaveForm(openingId) {
     const opening = openings.find(o => o.id === openingId);
     if (!opening) return;
-
-    // ensure core present
     const current = forms[openingId] || { questions: [] };
     const ensured = ensureCoreFieldsInForm({ questions: (current.questions || []).map(q => ({ ...q })), meta: { ...(current.meta || {}) } });
-
     const questionsToSave = ensured.questions;
     const meta = ensured.meta || {};
-    // persist to server
     try {
       if (!localStorage.getItem('token')) {
-        // store locally only
         setForms(f => ({ ...f, [openingId]: { questions: questionsToSave, meta } }));
         alert('Not signed in — changes saved locally only.');
         return;
       }
-
       const serverForms = await apiFetch(`/api/forms?openingId=${encodeURIComponent(openingId)}`);
       const serverForm = (serverForms && serverForms.length) ? serverForms[0] : null;
       const payload = { openingId, data: { questions: questionsToSave, meta } };
-
       if (serverForm) {
         await apiFetch(`/api/forms/${serverForm.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       } else {
         await apiFetch(`/api/forms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       }
-
       setForms(f => ({ ...f, [openingId]: { questions: questionsToSave, meta } }));
       alert('Form saved successfully.');
       await loadForms();
@@ -444,7 +515,6 @@ export default function App() {
     }
   }
 
-  // Publish form (generates share links + persists)
   async function handlePublishForm(openingId) {
     const opening = openings.find(o => o.id === openingId);
     if (!opening) return;
@@ -456,14 +526,12 @@ export default function App() {
     });
     const generic = `${window.location.origin}/apply/${formId}?opening=${encodeURIComponent(openingId)}`;
 
-    // ensure core and meta
     const current = forms[openingId] || { questions: [] };
     const ensured = ensureCoreFieldsInForm({ questions: (current.questions || []).map(q => ({ ...q })), meta: (current.meta || {}) });
 
     const questionsToPublish = ensured.questions;
     const meta = { ...(ensured.meta || {}), formId, isPublished: true, publishedAt: new Date().toISOString(), shareLinks, genericLink: generic };
 
-    // optimistic local update
     setForms((f) => ({ ...f, [openingId]: { questions: questionsToPublish, meta } }));
 
     try {
@@ -496,7 +564,6 @@ export default function App() {
     setPublicView({ openingId, source, submitted: false });
   }
 
-  // Delete single form
   async function deleteFormByOpening(openingId) {
     if (!confirm('Delete the server-saved form for this opening?')) return;
     try {
@@ -523,11 +590,10 @@ export default function App() {
 
   // Open/close Form Editor modal
   function openFormModal(openingId) {
-    // ensure the opening has a local form in state (with core fields)
     setForms((f) => {
       const copy = { ...f };
       if (!copy[openingId]) {
-        copy[openingId] = ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } });
+        copy[openingId] = ensureCoreFieldsInForm({ questions: templateQuestions.slice(0, 5).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } });
       } else {
         copy[openingId] = ensureCoreFieldsInForm({ questions: (copy[openingId].questions || []).map(q => ({ ...q })), meta: (copy[openingId].meta || {}) });
       }
@@ -541,7 +607,6 @@ export default function App() {
     setFormModalOpeningId(null);
   }
 
-  // Submit public form (unchanged)
   async function handlePublicSubmit(e) {
     e.preventDefault();
     const formEl = e.target;
@@ -594,8 +659,6 @@ export default function App() {
   /* -------------------------
      Hiring management helpers
   ------------------------- */
-
-  // Update candidate status
   async function updateCandidateStatus(responseId, newStatus) {
     try {
       setResponses(prev => prev.map(r => r.id === responseId ? { ...r, status: newStatus } : r));
@@ -618,6 +681,124 @@ export default function App() {
   }
 
   /* -------------------------
+     Derived filter options from data
+  ------------------------- */
+  const openingOptions = useMemo(() => {
+    const uniq = [];
+    const seen = new Set();
+    openings.forEach(o => {
+      if (!seen.has(o.id)) { seen.add(o.id); uniq.push({ value: o.id, label: o.title || o.id }); }
+    });
+    return uniq;
+  }, [openings]);
+
+  const locationOptions = useMemo(() => {
+    const uniq = [];
+    const seen = new Set();
+    openings.forEach(o => {
+      const v = (o.location || 'Unknown');
+      if (!seen.has(v)) { seen.add(v); uniq.push({ value: v, label: v }); }
+    });
+    return uniq;
+  }, [openings]);
+
+  const departmentOptions = useMemo(() => {
+    const uniq = [];
+    const seen = new Set();
+    openings.forEach(o => {
+      const v = (o.department || 'General');
+      if (!seen.has(v)) { seen.add(v); uniq.push({ value: v, label: v }); }
+    });
+    return uniq;
+  }, [openings]);
+
+  const sourceOptions = useMemo(() => {
+    const uniq = [];
+    const seen = new Set();
+    responses.forEach(r => {
+      const v = (r.source || 'unknown');
+      if (!seen.has(v)) { seen.add(v); uniq.push({ value: v, label: v }); }
+    });
+    return uniq;
+  }, [responses]);
+
+  const statusOptions = useMemo(() => {
+    const uniq = [];
+    const seen = new Set();
+    responses.forEach(r => {
+      const v = (r.status || 'Applied');
+      if (!seen.has(v)) { seen.add(v); uniq.push({ value: v, label: v }); }
+    });
+    return uniq;
+  }, [responses]);
+
+  /* -------------------------
+     Utilities for extracting fields from a response
+  ------------------------- */
+  function extractCandidateName(r) {
+    return (r.fullName || (r.answers && (r.answers.fullname || r.answers.name)) || "").trim();
+  }
+  function extractCandidateEmail(r) {
+    return ((r.email || (r.answers && r.answers.email)) || "").trim();
+  }
+  function extractCandidateCollege(r) {
+    // flexible: check multiple common keys
+    const candidates = [
+      r.college,
+      r.collegeName,
+      r.college_name,
+      r.college_institute,
+      r.college_institute_name,
+      r.answers && (r.answers.college || r.answers.collegeName || r.answers.college_name || r.answers.institute || r.answers.institution)
+    ];
+    for (const c of candidates) {
+      if (typeof c === 'string' && c.trim()) return c.trim();
+    }
+    // sometimes answers may be mapping of question ids -> value; try to find by checking against form coreFields
+    try {
+      const form = forms[r.openingId];
+      const collegeId = form?.meta?.coreFields?.collegeId;
+      if (collegeId && r.answers && r.answers[collegeId]) return (r.answers[collegeId] || "").trim();
+    } catch (e) {}
+    return "";
+  }
+
+  /* -------------------------
+     Apply filters to responses (includes searchQuery)
+  ------------------------- */
+  const filteredResponses = useMemo(() => {
+    const q = (searchQuery || "").toLowerCase().trim();
+    return responses.filter(r => {
+      // Opening filter
+      if (filterOpenings.length > 0 && !filterOpenings.includes(r.openingId)) return false;
+      // Location filter -> find opening location
+      const op = openings.find(o => o.id === r.openingId) || {};
+      if (filterLocations.length > 0 && !filterLocations.includes((op.location || ''))) return false;
+      // Department
+      if (filterDepartments.length > 0 && !filterDepartments.includes((op.department || ''))) return false;
+      // Source
+      if (filterSources.length > 0 && !filterSources.includes((r.source || 'unknown'))) return false;
+      // Status
+      const status = (r.status || 'Applied');
+      if (filterStatus.length > 0 && !filterStatus.includes(status)) return false;
+
+      if (q) {
+        const name = (extractCandidateName(r) || "").toLowerCase();
+        const email = (extractCandidateEmail(r) || "").toLowerCase();
+        const college = (extractCandidateCollege(r) || "").toLowerCase();
+        const openingTitle = (op.title || "").toLowerCase();
+        const source = (r.source || "unknown").toLowerCase();
+        const id = (r.id || "").toLowerCase();
+
+        const match = name.includes(q) || email.includes(q) || college.includes(q) || openingTitle.includes(q) || source.includes(q) || id.includes(q);
+        if (!match) return false;
+      }
+
+      return true;
+    });
+  }, [responses, openings, filterOpenings, filterLocations, filterDepartments, filterSources, filterStatus, searchQuery]);
+
+  /* -------------------------
      Render gating
   ------------------------- */
   if (!authChecked) {
@@ -630,37 +811,6 @@ export default function App() {
 
   if (!user) {
     return <LoginPage backendUrl={BACKEND} />;
-  }
-
-  /* -------------------------
-     Helper utilities for candidate display
-  ------------------------- */
-  function resolveCandidateName(resp, opening) {
-    // Prefer explicit top-level fields first (server now stores fullName/email/phone), then common answer keys
-    if (!resp) return 'Candidate';
-    if (resp.fullName) return resp.fullName;
-    // look in answers object (case-insensitive)
-    const answers = resp.answers || {};
-    const keys = Object.keys(answers || {});
-    const findKey = (cands) => {
-      for (const cand of cands) {
-        const found = keys.find(k => (k || '').toString().toLowerCase().trim() === cand.toLowerCase().trim());
-        if (found) return answers[found];
-      }
-      return null;
-    };
-    const nameCandidates = ['full name','fullname','name','candidate name','applicant name','your name','fullName','name'];
-    const byAns = findKey(nameCandidates);
-    if (byAns) return byAns;
-    // fallback: 'Candidate'
-    return 'Candidate';
-  }
-
-  function resolveCandidateLocation(resp, opening) {
-    // Prefer resp.location (new server field), then opening.location
-    if (resp && resp.location) return resp.location;
-    if (opening && opening.location) return opening.location;
-    return null;
   }
 
   /* -------------------------
@@ -693,8 +843,7 @@ export default function App() {
           <nav className="space-y-2">
             <div onClick={() => setActiveTab("overview")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'overview' ? 'bg-gray-800' : ''}`}>{<Icon name="menu" />} Overview</div>
             <div onClick={() => setActiveTab("jobs")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'jobs' ? 'bg-gray-800' : ''}`}>Jobs</div>
-            {/* "Form Editor" nav removed — editor is accessible from opening card */}
-            <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg.Gray-800' : ''}`}>Hiring</div>
+            <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg-gray-800' : ''}`}>Hiring</div>
           </nav>
         </div>
       </aside>
@@ -798,55 +947,78 @@ export default function App() {
             <h1 className="text-2xl font-semibold mb-6">Hiring</h1>
 
             <div className="grid grid-cols-3 gap-6">
+              {/* Main candidates column */}
               <div className="col-span-2 bg-white rounded-lg p-6 shadow-sm">
+                {/* Search box */}
+                <div className="mb-4">
+                  <input
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search candidates by name, email, college, opening, source or id..."
+                    className="w-full border p-3 rounded"
+                  />
+                  <div className="text-xs text-gray-400 mt-2">Search searches name, email, college, opening title, source and response id.</div>
+                </div>
+
                 <h2 className="font-semibold mb-4">Candidates</h2>
 
                 <div className="space-y-4">
-                  {responses.length === 0 && <div className="text-sm text-gray-500">No candidates yet.</div>}
-                  {responses.map(resp => {
-                    const opening = openings.find(o => o.id === resp.openingId) || {};
-                    const candidateName = resolveCandidateName(resp, opening);
-                    const candidateLocation = resolveCandidateLocation(resp, opening);
-                    const appliedAt = resp.createdAt ? new Date(resp.createdAt).toLocaleString() : '';
-                    return (
-                      <div key={resp.id} className="p-4 border rounded flex justify-between items-start">
-                        <div>
-                          {/* Candidate name at top */}
-                          <div className="text-lg font-medium">{candidateName}</div>
+                  {filteredResponses.length === 0 && <div className="text-sm text-gray-500">No candidates match the selected filters or search.</div>}
 
-                          {/* Opening name and location inline with small muted style (same as applied/source text) */}
-                          <div className="text-xs text-gray-500 mt-1">
-                            {opening.title || resp.openingId}
-                            {candidateLocation ? ` • ${candidateLocation}` : ''}
+                  {filteredResponses.map(resp => {
+                    const opening = openings.find(o => o.id === resp.openingId) || {};
+                    const candidateName = resp.fullName || (resp.answers && (resp.answers.fullname || resp.answers.name)) || 'Candidate';
+                    const candidateEmail = (resp.email || (resp.answers && resp.answers.email) || '').trim();
+                    const candidateCollege = extractCandidateCollege(resp);
+                    return (
+                      <div key={resp.id} className="p-6 border rounded relative bg-white min-h-[130px]">
+                        <div className="flex justify-between items-start">
+                          {/* Left column: name/email + opening */}
+                          <div style={{ minWidth: 0, maxWidth: 'calc(100% - 220px)' }}>
+                            <div className="font-semibold text-xl leading-tight break-words">{candidateName}</div>
+                            {candidateEmail ? (
+                              <div className="text-sm text-gray-600 mt-1" style={{ textTransform: 'uppercase' }}>{candidateEmail}</div>
+                            ) : null}
+                            <div className="text-sm text-gray-500 mt-3 break-words">
+                              {opening.title || '—'} &nbsp;•&nbsp; {opening.location || ''}
+                            </div>
+                            <div className="text-sm text-gray-500 mt-2">Source: <span className="break-words inline-block max-w-[60%]">{resp.source || 'unknown'}</span></div>
+
+                            {/* College display */}
+                            {candidateCollege ? (
+                              <div className="text-sm text-gray-600 mt-2">College: <span className="font-medium">{candidateCollege}</span></div>
+                            ) : null}
+
+                            {/* Bottom-left row: Resume and response id - separated and allowed to wrap so they don't overlap */}
+                            <div className="mt-4 text-sm flex flex-wrap items-center gap-2">
+                              {resp.resumeLink ? (
+                                <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline mr-3">Resume</a>
+                              ) : null}
+                              <span className="text-gray-500 break-all text-xs">{resp.id}</span>
+                            </div>
                           </div>
 
-                          <div className="text-xs text-gray-500 mt-2">Source: {resp.source}</div>
-
-                          {/* Resume link and response id separated by | */}
-                          {resp.resumeLink ? (
-                            <div className="text-xs mt-2">
-                              <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">Resume</a>
-                              <span className="mx-2 text-gray-400">|</span>
-                              <span className="text-gray-500">{resp.id}</span>
-                            </div>
-                          ) : (
-                            <div className="text-xs mt-2 text-gray-500">{resp.id}</div>
-                          )}
+                          {/* Right column: status selector (kept top-right) */}
+                          <div className="w-[200px] flex flex-col items-end">
+                            <div className="text-xs text-gray-500 mb-1">Status</div>
+                            <select
+                              value={resp.status || 'Applied'}
+                              onChange={(e) => updateCandidateStatus(resp.id, e.target.value)}
+                              className="border p-2 rounded"
+                            >
+                              <option>Applied</option>
+                              <option>Screening</option>
+                              <option>Interview</option>
+                              <option>Offer</option>
+                              <option>Hired</option>
+                              <option>Rejected</option>
+                            </select>
+                          </div>
                         </div>
 
-                        <div className="flex flex-col items-end gap-2">
-                          <div className="text-xs text-gray-500">Status</div>
-                          <select value={resp.status || 'Applied'} onChange={(e) => updateCandidateStatus(resp.id, e.target.value)} className="border p-2 rounded">
-                            <option>Applied</option>
-                            <option>Screening</option>
-                            <option>Interview</option>
-                            <option>Offer</option>
-                            <option>Hired</option>
-                            <option>Rejected</option>
-                          </select>
-
-                          {/* Applied at moved here */}
-                          <div className="text-xs text-gray-400 mt-1">Applied at: {appliedAt}</div>
+                        {/* Applied-at: anchored bottom-right */}
+                        <div className="absolute right-6 bottom-4 text-sm text-gray-500">
+                          Applied at: {resp.createdAt ? new Date(resp.createdAt).toLocaleString() : ''}
                         </div>
                       </div>
                     );
@@ -854,9 +1026,73 @@ export default function App() {
                 </div>
               </div>
 
+              {/* RIGHT SIDE: Filters aside */}
               <aside className="bg-white rounded-lg p-6 shadow-sm">
-                <h3 className="font-semibold mb-3">Filters</h3>
-                <div className="text-sm text-gray-500">(coming soon) filter by job, status, source, etc.</div>
+                <h3 className="font-semibold mb-4">Filters</h3>
+
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div />
+                  </div>
+                  <MultiSelectDropdown
+                    label="Opening"
+                    options={openingOptions}
+                    selected={filterOpenings}
+                    onChange={setFilterOpenings}
+                    placeholder="All Opening"
+                    searchEnabled={true}
+                  />
+
+                  <div className="mt-4 flex items-center justify-between">
+                    <div />
+                  </div>
+                  <MultiSelectDropdown
+                    label="Location"
+                    options={locationOptions}
+                    selected={filterLocations}
+                    onChange={setFilterLocations}
+                    placeholder="All Location"
+                    searchEnabled={true}
+                  />
+
+                  <div className="mt-4 flex items-center justify-between">
+                    <div />
+                  </div>
+                  <MultiSelectDropdown
+                    label="Department"
+                    options={departmentOptions}
+                    selected={filterDepartments}
+                    onChange={setFilterDepartments}
+                    placeholder="All Department"
+                    searchEnabled={true}
+                  />
+
+                  <div className="mt-4 flex items-center justify-between">
+                    <div />
+                  </div>
+                  <MultiSelectDropdown
+                    label="Source"
+                    options={sourceOptions}
+                    selected={filterSources}
+                    onChange={setFilterSources}
+                    placeholder="All Source"
+                    searchEnabled={true}
+                  />
+
+                  <div className="mt-4 flex items-center justify-between">
+                    <div />
+                  </div>
+                  {/* Important: Status dropdown should open upwards (prevent page scrolling) */}
+                  <MultiSelectDropdown
+                    label="Status"
+                    options={statusOptions}
+                    selected={filterStatus}
+                    onChange={setFilterStatus}
+                    placeholder="All Status"
+                    searchEnabled={false}
+                    openUp={true}
+                  />
+                </div>
               </aside>
             </div>
           </>
@@ -968,7 +1204,7 @@ export default function App() {
       {/* FORM EDITOR MODAL (per opening) */}
       {showFormModal && formModalOpeningId && (() => {
         const op = openings.find(o => o.id === formModalOpeningId) || { id: formModalOpeningId, title: 'Opening' };
-        const formObj = forms[formModalOpeningId] || ensureCoreFieldsInForm({ questions: templateQuestions.slice(0,4).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id } } });
+        const formObj = forms[formModalOpeningId] || ensureCoreFieldsInForm({ questions: templateQuestions.slice(0,5).map(q => ({ ...q })), meta: { coreFields: { fullNameId: CORE_QUESTIONS.fullName.id, emailId: CORE_QUESTIONS.email.id, phoneId: CORE_QUESTIONS.phone.id, resumeId: CORE_QUESTIONS.resume.id, collegeId: CORE_QUESTIONS.college.id } } });
         return (
           <div key={"formmodal_" + formModalOpeningId} className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
             <div className="bg-white rounded-lg p-6 w-[920px] max-h-[90vh] overflow-auto shadow-xl">
@@ -978,7 +1214,6 @@ export default function App() {
                   <div className="text-xs text-gray-500">Edit questions, save, publish, or share links. Core fields are mandatory and cannot be removed.</div>
                 </div>
                 <div className="flex gap-2">
-                  {/* Custom question is now only available inside form editor modal */}
                   <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-1 border rounded">+ Custom Question</button>
                   <button onClick={() => handleSaveForm(op.id)} className="px-3 py-1 border rounded">Save</button>
                   <button onClick={() => handlePublishForm(op.id)} className="px-3 py-1 bg-green-600 text-white rounded">Publish</button>
