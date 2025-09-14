@@ -1382,7 +1382,6 @@ export default function App() {
 
                           {/* Middle row: optional validation summary */}
                           <div className="text-xs text-gray-500">
-                            {q.required ? 'Required' : 'Optional'}
                             {q.validation && Object.keys(q.validation).length ? (
                               <span className="ml-3 text-gray-400">• {Object.entries(q.validation).map(([k,v]) => `${k}=${v}`).join(', ')}</span>
                             ) : null}
