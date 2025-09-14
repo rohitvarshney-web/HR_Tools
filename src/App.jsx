@@ -27,7 +27,7 @@ const CORE_QUESTIONS = {
   email: { id: "q_email", type: "email", label: "Email address", required: true },
   phone: { id: "q_phone", type: "short_text", label: "Phone number", required: true },
   resume: { id: "q_resume", type: "file", label: "Upload resume / CV", required: true },
-  college: { id: "q_college", type: "short_text", label: "College / Institute", required: true },
+  college: { id: "q_college", type: "short_text", label: "College / Company", required: true },
 };
 const PROTECTED_IDS = new Set(Object.values(CORE_QUESTIONS).map(q => q.id));
 
