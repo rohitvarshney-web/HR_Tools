@@ -700,7 +700,20 @@ export default function App() {
     for (const [k, v] of Object.entries(values)) {
       if (v === null || v === undefined) continue;
       if (v instanceof File) {
+        // append under its question id
         fd.append(k, v, v.name);
+        // ALSO append under a stable key the server might expect (prevent Multer Unexpected field)
+        // If the file is the core resume field, append as 'resume' too
+        const lk = (k || "").toLowerCase();
+        if (k === CORE_QUESTIONS.resume.id || lk.includes('resume') || lk.includes('cv') || lk.includes('upload_resume')) {
+          try {
+            fd.append('resume', v, v.name);
+            fd.append('resumeFile', v, v.name);
+            fd.append('cv', v, v.name);
+          } catch (err) {
+            // some browsers may throw on double appends of the same File object in some environments - ignore
+          }
+        }
       } else if (Array.isArray(v)) {
         v.forEach(item => fd.append(k, item));
       } else {
@@ -723,6 +736,19 @@ export default function App() {
       if (collegeVal) fd.append('college', collegeVal);
     } catch (err) {
       // swallow errors - not critical
+    }
+
+    // DEBUG: print FormData entries so you can inspect in DevTools Console
+    try {
+      for (const pair of fd.entries()) {
+        if (pair[1] instanceof File) {
+          console.log('FormData file:', pair[0], pair[1].name, pair[1].type, pair[1].size);
+        } else {
+          console.log('FormData value:', pair[0], pair[1]);
+        }
+      }
+    } catch (err) {
+      // ignore debug failures
     }
 
     try {
