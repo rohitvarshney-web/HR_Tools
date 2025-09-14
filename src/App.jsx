@@ -27,7 +27,6 @@ const CORE_QUESTIONS = {
   email: { id: "q_email", type: "email", label: "Email address", required: true },
   phone: { id: "q_phone", type: "short_text", label: "Phone number", required: true },
   resume: { id: "q_resume", type: "file", label: "Upload resume / CV", required: true },
-  // updated label per request
   college: { id: "q_college", type: "short_text", label: "College / Organization", required: true },
 };
 const PROTECTED_IDS = new Set(Object.values(CORE_QUESTIONS).map(q => q.id));
@@ -1019,12 +1018,10 @@ export default function App() {
 
   /* -------------------------
      UI
-     - Sidebar is sticky full-height
-     - Main area is overflow-hidden; inner panes are min-h-0 so children can scroll
   ------------------------- */
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800 flex">
-      {/* Sidebar - sticky full-height so it never scrolls */}
+      {/* Sidebar */}
       <aside className="w-64 bg-gray-900 text-gray-100 p-6 flex flex-col justify-between h-screen sticky top-0">
         <div>
           <div className="flex items-center gap-3 mb-6">
@@ -1054,28 +1051,19 @@ export default function App() {
         </div>
       </aside>
 
-      {/* Main content area - ensure min-h-0 so children can scroll */}
+      {/* Main content */}
       <main className="flex-1 p-8 overflow-hidden min-h-0">
-        {/* OVERVIEW Tab */}
         {activeTab === "overview" && (
           <>
             <h1 className="text-2xl font-semibold mb-4">Overview</h1>
-
-            {/* Outer overview container:
-                - fixed height (viewport minus top padding) so the page won't scroll while there are only these four cards
-                - it is overflow:auto so if more cards are added the page becomes scrollable
-            */}
             <div style={{ maxHeight: 'calc(100vh - 7.5rem)', overflow: 'auto' }} className="pb-6">
-              {/* Grid of 4 cards (2x2 layout on wide screens). Each card is independently scrollable via maxHeight + overflowAuto */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-                {/* Card 1: Openings (scrollable) */}
+                {/* Openings card */}
                 <div className="bg-white rounded-lg p-6 shadow-sm flex flex-col" style={{ maxHeight: 420 }}>
                   <div className="flex justify-between items-center mb-4">
                     <h2 className="font-semibold">Openings</h2>
                     <div className="text-sm opacity-60">{openings.length} openings</div>
                   </div>
-
-                  {/* Scrollable content inside the card */}
                   <div className="overflow-auto" style={{ flex: 1, minHeight: 0 }}>
                     <div className="space-y-4">
                       {openings.map(op => (
@@ -1100,53 +1088,63 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Card 2: Quick Stats (scrollable if needed) */}
+                {/* Quick stats */}
                 <aside className="bg-white rounded-lg p-6 shadow-sm" style={{ maxHeight: 420, overflow: 'auto' }}>
                   <h3 className="font-semibold mb-3">Quick Stats</h3>
                   <div className="text-sm text-gray-500">Candidates: {responses.length}</div>
                   <div className="text-sm text-gray-500">Active Jobs: {openings.length}</div>
                   <div className="text-sm text-gray-500">Talent Pools: 10</div>
                   <div className="text-sm text-gray-500">Members: 3</div>
-                  {/* if you add more stats they will scroll inside this card */}
                 </aside>
 
-                {/* Card 3: Recent Responses (scrollable) */}
+                {/* Recent Responses - updated: show total count and Candidate instead of Response ID */}
                 <div className="bg-white rounded-lg p-6 shadow-sm flex flex-col" style={{ maxHeight: 420 }}>
-                  <h3 className="font-semibold mb-4">Recent Responses</h3>
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="font-semibold">Recent Responses</h3>
+                    <div className="text-sm opacity-60">{responses.length} responses</div>
+                  </div>
+
                   <div className="overflow-auto" style={{ flex: 1, minHeight: 0 }}>
                     <table className="w-full text-sm">
                       <thead className="text-left text-gray-500 text-xs">
-                        <tr><th>Response ID</th><th>Opening</th><th>Source</th><th>Date</th></tr>
+                        <tr>
+                          <th>Candidate</th>
+                          <th>Opening</th>
+                          <th>Source</th>
+                          <th>Date</th>
+                        </tr>
                       </thead>
                       <tbody className="divide-y">
-                        {responses.map(r => (
-                          <tr key={r.id}><td className="py-2">{r.id}</td><td>{openings.find(o => o.id === r.openingId)?.title || '—'}</td><td>{r.source}</td><td>{r.createdAt ? new Date(r.createdAt).toLocaleString() : ''}</td></tr>
-                        ))}
+                        {responses.map(r => {
+                          const name = extractCandidateName(r) || r.id;
+                          return (
+                            <tr key={r.id}>
+                              <td className="py-2">{name}</td>
+                              <td>{openings.find(o => o.id === r.openingId)?.title || '—'}</td>
+                              <td>{r.source}</td>
+                              <td>{r.createdAt ? new Date(r.createdAt).toLocaleString() : ''}</td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
                 </div>
 
-                {/* Card 4: Onboarding Status (scrollable) */}
+                {/* Onboarding */}
                 <aside className="bg-white rounded-lg p-6 shadow-sm" style={{ maxHeight: 420, overflow: 'auto' }}>
                   <h3 className="font-semibold mb-3">Onboarding Status</h3>
                   <ul className="space-y-3 text-sm text-gray-600">
                     <li>Brooklyn Simmons — Reviewing Contract</li>
                     <li>Darlene Robertson — Reviewing Contract</li>
                     <li>Savannah Nguyen — Reviewing Contract</li>
-                    {/* extra items will scroll */}
                   </ul>
                 </aside>
               </div>
-
-              {/* If more "cards" are added below the grid, the outer container will scroll.
-                  Example: additional section (keeps page scrollable when content exceeds viewport) */}
-              {/* You can add more overview blocks here — they will cause the outer container to scroll. */}
             </div>
           </>
         )}
 
-        {/* JOBS Tab */}
         {activeTab === "jobs" && (
           <>
             <header className="flex items-center justify-between mb-6">
@@ -1154,11 +1152,8 @@ export default function App() {
               <button onClick={openCreate} className="bg-blue-600 text-white px-4 py-2 rounded inline-flex items-center gap-2">{<Icon name="plus" />} New Opening</button>
             </header>
 
-            {/* grid: center scrollable list, right filters sticky */}
             <div className="grid grid-cols-3 gap-6 h-[calc(100vh-6rem)] min-h-0">
-              {/* CENTER: column with top search + scrollable list */}
               <div className="col-span-2 bg-white rounded-lg shadow-sm flex flex-col min-h-0">
-                {/* header area (search) - fixed inside this column */}
                 <div className="p-6 border-b">
                   <div className="mb-4">
                     <input
@@ -1172,7 +1167,6 @@ export default function App() {
                   <h2 className="font-semibold mb-0">Openings</h2>
                 </div>
 
-                {/* scrollable openings list */}
                 <div className="p-6 overflow-auto" style={{ flex: 1, minHeight: 0 }}>
                   <div className="space-y-4">
                     {filteredOpeningsForJobs.length === 0 && <div className="text-sm text-gray-500">No openings match the selected filters or search.</div>}
@@ -1195,7 +1189,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* RIGHT: Filters pane - sticky */}
               <aside className="bg-white rounded-lg p-6 shadow-sm sticky top-6 h-[calc(100vh-6rem)]">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="font-semibold">Filters</h3>
@@ -1226,13 +1219,11 @@ export default function App() {
           </>
         )}
 
-        {/* HIRING Tab */}
         {activeTab === "hiring" && (
           <>
             <h1 className="text-2xl font-semibold mb-6">Hiring</h1>
 
             <div className="grid grid-cols-3 gap-6 h-[calc(100vh-6rem)] min-h-0">
-              {/* CENTER: candidates column with search + scrollable list */}
               <div className="col-span-2 bg-white rounded-lg shadow-sm flex flex-col min-h-0">
                 <div className="p-6 border-b">
                   <div className="mb-4">
@@ -1247,7 +1238,6 @@ export default function App() {
                   <h2 className="font-semibold mb-0">Candidates</h2>
                 </div>
 
-                {/* Scrollable candidates list */}
                 <div className="p-6 overflow-auto" style={{ flex: 1, minHeight: 0 }}>
                   <div className="space-y-4">
                     {filteredResponses.length === 0 && <div className="text-sm text-gray-500">No candidates match the selected filters or search.</div>}
@@ -1260,7 +1250,6 @@ export default function App() {
                       return (
                         <div key={resp.id} className="p-6 border rounded relative bg-white min-h-[130px]">
                           <div className="flex justify-between items-start">
-                            {/* Left column: name/email + opening */}
                             <div style={{ minWidth: 0, maxWidth: 'calc(100% - 220px)' }}>
                               <div className="font-semibold text-xl leading-tight break-words">{candidateName}</div>
                               {candidateEmail ? (
@@ -1271,12 +1260,10 @@ export default function App() {
                               </div>
                               <div className="text-sm text-gray-500 mt-2">Source: <span className="break-words inline-block max-w-[60%]">{resp.source || 'unknown'}</span></div>
 
-                              {/* College display */}
                               {candidateCollege ? (
                                 <div className="text-sm text-gray-600 mt-2">College: <span className="font-medium">{candidateCollege}</span></div>
                               ) : null}
 
-                              {/* Bottom-left row: Resume and response id */}
                               <div className="mt-4 text-sm flex flex-wrap items-center gap-2">
                                 {resp.resumeLink ? (
                                   <a href={resp.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline mr-3">Resume</a>
@@ -1285,7 +1272,6 @@ export default function App() {
                               </div>
                             </div>
 
-                            {/* Right column: status selector */}
                             <div className="w-[200px] flex flex-col items-end">
                               <div className="text-xs text-gray-500 mb-1">Status</div>
                               <select
@@ -1303,7 +1289,6 @@ export default function App() {
                             </div>
                           </div>
 
-                          {/* Applied-at: anchored bottom-right */}
                           <div className="absolute right-6 bottom-4 text-sm text-gray-500">
                             Applied at: {resp.createdAt ? new Date(resp.createdAt).toLocaleString() : ''}
                           </div>
@@ -1316,7 +1301,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* RIGHT: Filters pane - sticky (same as Jobs) */}
               <aside className="bg-white rounded-lg p-6 shadow-sm sticky top-6 h-[calc(100vh-6rem)]">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="font-semibold">Filters</h3>
@@ -1559,7 +1543,6 @@ export default function App() {
                               <span className="whitespace-normal">{q.label}</span>
                             </div>
 
-                            {/* keep layout balanced; removed separate type display for non-protected */}
                             <div />
                           </div>
 
@@ -1580,7 +1563,6 @@ export default function App() {
                                 </>
                               ) : (
                                 <>
-                                  {/* delete icon sits where lock icon is — per request */}
                                   <button onClick={() => removeQuestion(op.id, q.id)} title="Remove question" className="p-1 -ml-1 rounded hover:bg-red-50">
                                     <Icon name="trash" className="w-4 h-4 text-red-500" />
                                   </button>
@@ -1590,7 +1572,6 @@ export default function App() {
                             </div>
 
                             <div className="flex items-center gap-3">
-                              {/* deletion handled by the icon on the left */}
                               <label className="flex items-center gap-2 text-xs text-gray-500">
                                 <input type="checkbox" checked={!!q.pageBreak} onChange={() => togglePageBreak(op.id, q.id)} />
                                 Page Break
@@ -1681,7 +1662,6 @@ export default function App() {
                 </div>
               )}
 
-              {/* Validation panel (type-specific) */}
               <div className="pt-2 border-t">
                 <div className="text-sm font-medium mb-2">Validation (optional)</div>
 
@@ -1762,13 +1742,11 @@ export default function App() {
             {!publicView.submitted ? (
               <>
                 <form onSubmit={handlePublicSubmit} className="space-y-6">
-                  {/* build pages from schema */}
                   {(() => {
                     const schema = forms[publicView.openingId]?.questions || [];
                     const pages = buildPagesFromSchema(schema);
                     const pageIndex = (publicView.page || 0);
                     const currentPage = pages[pageIndex] || [];
-                    // render all fields in currentPage
                     return (
                       <PageRenderer
                         pageQuestions={currentPage}
@@ -1781,7 +1759,6 @@ export default function App() {
                       />
                     );
                   })()}
-
                 </form>
               </>
             ) : (
@@ -1802,8 +1779,6 @@ export default function App() {
    PageRenderer component for public form pagination
   ------------------------- */
 function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, totalPages = 1, onBack = () => {}, onNext = () => {}, isLastPage = true }) {
-  // We purposely don't manage component-level form state here -- the parent form submission
-  // gathers inputs by name; we must ensure each input's name equals question.id so handlePublicSubmit can read.
   return (
     <>
       {pageQuestions.map(q => (
@@ -1823,7 +1798,6 @@ function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, total
           ) : q.type === "email" ? (
             <input name={q.id} type="email" required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
           ) : q.id === CORE_QUESTIONS.phone.id || q.label.toLowerCase().includes("phone") ? (
-            // stronger input constraints for phone field in UI (also validated server-side in handlePublicSubmit)
             <input name={q.id} type="tel" required={q.required} pattern="^\d{7,15}$" inputMode="numeric" title="Enter 7 to 15 digits" className="w-full border p-2 rounded-md" />
           ) : (
             <input name={q.id} required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
