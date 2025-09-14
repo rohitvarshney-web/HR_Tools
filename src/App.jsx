@@ -1307,10 +1307,10 @@ export default function App() {
                 <div className="flex items-center justify-between p-4">
                   <div>
                     <h3 className="text-lg font-semibold mb-1">Form Editor — {op.title}</h3>
-                    <div className="text-xs text-gray-500">Edit questions, save, publish, or share links.</div>
+                    <div className="text-xs text-gray-500">Edit questions, save, publish, or share links. Core fields are mandatory and cannot be removed.</div>
                   </div>
                   <div className="flex items-center gap-3">
-                    <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">+Add</button>
+                    <button onClick={() => openCustomModalFor(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">+ Add</button>
                     <button onClick={() => handleSaveForm(op.id)} className="px-3 py-2 border rounded bg-white hover:shadow">Save</button>
                     <button onClick={() => handlePublishForm(op.id)} className="px-3 py-2 bg-green-600 text-white rounded">Publish</button>
                     <button onClick={() => deleteFormByOpening(op.id)} className="px-3 py-2 border rounded text-red-600 bg-white hover:shadow">Delete</button>
@@ -1404,7 +1404,7 @@ export default function App() {
                               {!PROTECTED_IDS.has(q.id) ? <button onClick={() => removeQuestion(op.id, q.id)} className="text-red-500 text-sm">Remove</button> : <div className="text-xs text-gray-400"></div>}
                               <label className="flex items-center gap-2 text-xs text-gray-500">
                                 <input type="checkbox" checked={!!q.pageBreak} onChange={() => togglePageBreak(op.id, q.id)} />
-                                Page break
+                                Page break after
                               </label>
                             </div>
                           </div>
@@ -1544,6 +1544,7 @@ export default function App() {
 
               <div className="flex items-center gap-2 mt-3">
                 <input id="req" type="checkbox" checked={customQ.required} onChange={(e) => setCustomQ({ ...customQ, required: e.target.checked })} />
+                <label htmlFor="req" className="text-sm">Required</label>
               </div>
 
               <div className="flex justify-end gap-2 mt-4">
