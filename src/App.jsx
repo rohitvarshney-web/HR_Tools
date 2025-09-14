@@ -1,4 +1,3 @@
-// src/App.jsx
 import React, { useState, useEffect, useMemo } from "react";
 import { v4 as uuidv4 } from "uuid";
 
@@ -168,6 +167,9 @@ export default function App() {
 
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
+
+  // NEW: state for values entered in public form (persist across pages)
+  const [formValues, setFormValues] = useState({});
 
   // Custom question modal + form editor states
   const [showCustomModal, setShowCustomModal] = useState(false);
@@ -584,7 +586,9 @@ export default function App() {
     navigator.clipboard.writeText(text).then(() => alert("Copied to clipboard"));
   }
 
+  // NEW: reset formValues when opening a public form so previous data is not reused
   function openPublicFormByLink(openingId, source) {
+    setFormValues({}); // << reset stored values for a clean start
     // initialize page index to 0
     setPublicView({ openingId, source, submitted: false, page: 0 });
   }
@@ -634,10 +638,10 @@ export default function App() {
 
   /* -------------------------
      Public form submission with validation and top-level core fields
+     (UPDATED to use formValues instead of reading raw form DOM elements)
   ------------------------- */
   async function handlePublicSubmit(e) {
     e.preventDefault();
-    const formEl = e.target;
     const openingId = publicView.openingId;
     const source = publicView.source || 'unknown';
 
@@ -647,38 +651,25 @@ export default function App() {
       alert('Form schema not found.');
       return;
     }
-    const qMap = {};
-    (formObj.questions || []).forEach(q => { qMap[q.id] = q; });
 
-    // collect values and validate
-    const values = {};
-    for (let i = 0; i < formEl.elements.length; i++) {
-      const el = formEl.elements[i];
-      if (!el.name) continue;
-      if (el.type === 'file') {
-        values[el.name] = el.files && el.files[0] ? el.files[0] : null;
-      } else if (el.type === 'checkbox') {
-        if (!values[el.name]) values[el.name] = [];
-        if (el.checked) values[el.name].push(el.value);
-      } else {
-        values[el.name] = el.value;
-      }
-    }
+    // use the persistent values stored in state
+    const values = { ...(formValues || {}) };
 
     // validate each field mapped in schema
     for (const q of (formObj.questions || [])) {
       const name = q.id;
       const val = values[name];
-      // required
+      // required checks
       if (q.required) {
         if (q.type === 'file') {
           if (!val) { alert(`${q.label} is required.`); return; }
         } else if (q.type === 'checkboxes') {
           if (!val || (Array.isArray(val) && val.length === 0)) { alert(`${q.label} is required.`); return; }
-        } else if (!val || String(val).trim() === "") {
+        } else if (val === undefined || val === null || String(val).trim() === "") {
           alert(`${q.label} is required.`); return;
         }
       }
+
       const v = q.validation || {};
       if (q.type === 'short_text' || q.type === 'long_text' || q.type === 'email' || q.type === 'url') {
         const s = (val || "").toString();
@@ -697,11 +688,13 @@ export default function App() {
           if (s && !emailRe.test(s)) { alert(`${q.label} must be a valid email address.`); return; }
         }
       }
+
       if (q.id === CORE_QUESTIONS.phone.id || q.label.toLowerCase().includes('phone')) {
         const s = (val || "").toString().replace(/\D/g, '');
         if (q.required && s.length === 0) { alert(`${q.label} is required.`); return; }
         if (s && (s.length < 7 || s.length > 15)) { alert(`${q.label} must be between 7 and 15 digits.`); return; }
       }
+
       if (q.type === 'number') {
         if (val !== undefined && val !== null && String(val).trim() !== "") {
           const num = Number(val);
@@ -710,6 +703,7 @@ export default function App() {
           if (v.max !== undefined && v.max !== "" && num > Number(v.max)) { alert(`${q.label} must be <= ${v.max}`); return; }
         }
       }
+
       if (q.type === 'file' && val) {
         const f = val;
         if (v.accept && v.accept.length) {
@@ -737,7 +731,6 @@ export default function App() {
         // append under its question id
         fd.append(k, v, v.name);
         // ALSO append under a stable key the server might expect (prevent Multer Unexpected field)
-        // If the file is the core resume field, append as 'resume' too
         const lk = (k || "").toLowerCase();
         if (k === CORE_QUESTIONS.resume.id || lk.includes('resume') || lk.includes('cv') || lk.includes('upload_resume')) {
           try {
@@ -745,7 +738,7 @@ export default function App() {
             fd.append('resumeFile', v, v.name);
             fd.append('cv', v, v.name);
           } catch (err) {
-            // some browsers may throw on double appends of the same File object in some environments - ignore
+            // ignore potential browser double-append issues
           }
         }
       } else if (Array.isArray(v)) {
@@ -756,7 +749,6 @@ export default function App() {
     }
 
     // Also append top-level core fields so backend receives them as first-class fields
-    // (so they can be saved into the top-level response properties and Google Sheet columns)
     try {
       const core = formObj.meta?.coreFields || {};
       const fullnameVal = values[core.fullNameId] || values[CORE_QUESTIONS.fullName.id] || "";
@@ -1756,6 +1748,8 @@ export default function App() {
                         onBack={() => setPublicView(prev => ({ ...prev, page: Math.max(0, (prev.page || 0) - 1) }))}
                         onNext={() => setPublicView(prev => ({ ...prev, page: Math.min(((pages.length - 1) || 0), (prev.page || 0) + 1) }))}
                         isLastPage={pageIndex === pages.length - 1}
+                        values={formValues}
+                        setValues={setFormValues}
                       />
                     );
                   })()}
@@ -1776,9 +1770,14 @@ export default function App() {
 }
 
 /* -------------------------
-   PageRenderer component for public form pagination
+   PageRenderer component for public form pagination (CONTROLLED)
+   - receives `values` and `setValues` to persist inputs across pages
   ------------------------- */
-function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, totalPages = 1, onBack = () => {}, onNext = () => {}, isLastPage = true }) {
+function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, totalPages = 1, onBack = () => {}, onNext = () => {}, isLastPage = true, values = {}, setValues = () => {} }) {
+  const updateValue = (id, val) => {
+    setValues(prev => ({ ...prev, [id]: val }));
+  };
+
   return (
     <>
       {pageQuestions.map(q => (
@@ -1786,21 +1785,104 @@ function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, total
           <label className="block text-sm font-medium mb-2">{q.label}{q.required ? " *" : ""}</label>
 
           {q.type === "long_text" ? (
-            <textarea name={q.id} required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
+            <textarea
+              name={q.id}
+              value={values[q.id] || ""}
+              onChange={e => updateValue(q.id, e.target.value)}
+              required={q.required}
+              minLength={q.validation?.minLength}
+              maxLength={q.validation?.maxLength}
+              pattern={q.validation?.pattern}
+              className="w-full border p-2 rounded-md"
+            />
           ) : q.type === "dropdown" || q.type === "radio" ? (
-            <select name={q.id} required={q.required} className="w-full border p-2 rounded-md">{(q.options || []).map(opt => <option key={opt}>{opt}</option>)}</select>
+            <select
+              name={q.id}
+              value={values[q.id] || ""}
+              onChange={e => updateValue(q.id, e.target.value)}
+              required={q.required}
+              className="w-full border p-2 rounded-md"
+            >
+              <option value="">Select...</option>
+              {(q.options || []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+            </select>
           ) : q.type === "checkboxes" ? (
-            (q.options || []).map(opt => <div key={opt}><label className="inline-flex items-center"><input name={q.id} value={opt} type="checkbox" className="mr-2" /> {opt}</label></div>)
+            (q.options || []).map(opt => (
+              <div key={opt}>
+                <label className="inline-flex items-center">
+                  <input
+                    name={q.id}
+                    type="checkbox"
+                    checked={(values[q.id] || []).includes(opt)}
+                    onChange={e => {
+                      const existing = Array.isArray(values[q.id]) ? [...values[q.id]] : [];
+                      if (e.target.checked) {
+                        if (!existing.includes(opt)) existing.push(opt);
+                      } else {
+                        const idx = existing.indexOf(opt);
+                        if (idx !== -1) existing.splice(idx, 1);
+                      }
+                      updateValue(q.id, existing);
+                    }}
+                    className="mr-2"
+                  />
+                  <span>{opt}</span>
+                </label>
+              </div>
+            ))
           ) : q.type === "file" ? (
-            <input name={q.id} type="file" accept={q.validation?.accept || undefined} />
+            <input
+              name={q.id}
+              type="file"
+              accept={q.validation?.accept || undefined}
+              onChange={e => updateValue(q.id, e.target.files && e.target.files[0] ? e.target.files[0] : null)}
+            />
           ) : q.type === "number" ? (
-            <input name={q.id} type="number" required={q.required} min={q.validation?.min} max={q.validation?.max} className="w-full border p-2 rounded-md" />
+            <input
+              name={q.id}
+              type="number"
+              value={values[q.id] !== undefined ? values[q.id] : ""}
+              onChange={e => updateValue(q.id, e.target.value)}
+              required={q.required}
+              min={q.validation?.min}
+              max={q.validation?.max}
+              className="w-full border p-2 rounded-md"
+            />
           ) : q.type === "email" ? (
-            <input name={q.id} type="email" required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
+            <input
+              name={q.id}
+              type="email"
+              value={values[q.id] || ""}
+              onChange={e => updateValue(q.id, e.target.value)}
+              required={q.required}
+              minLength={q.validation?.minLength}
+              maxLength={q.validation?.maxLength}
+              pattern={q.validation?.pattern}
+              className="w-full border p-2 rounded-md"
+            />
           ) : q.id === CORE_QUESTIONS.phone.id || q.label.toLowerCase().includes("phone") ? (
-            <input name={q.id} type="tel" required={q.required} pattern="^\d{7,15}$" inputMode="numeric" title="Enter 7 to 15 digits" className="w-full border p-2 rounded-md" />
+            <input
+              name={q.id}
+              type="tel"
+              value={values[q.id] || ""}
+              onChange={e => updateValue(q.id, e.target.value)}
+              required={q.required}
+              pattern="^\d{7,15}$"
+              inputMode="numeric"
+              title="Enter 7 to 15 digits"
+              className="w-full border p-2 rounded-md"
+            />
           ) : (
-            <input name={q.id} required={q.required} minLength={q.validation?.minLength} maxLength={q.validation?.maxLength} pattern={q.validation?.pattern} className="w-full border p-2 rounded-md" />
+            <input
+              name={q.id}
+              value={values[q.id] || ""}
+              onChange={e => updateValue(q.id, e.target.value)}
+              required={q.required}
+              minLength={q.validation?.minLength}
+              maxLength={q.validation?.maxLength}
+              pattern={q.validation?.pattern}
+              className="w-full border p-2 rounded-md"
+            />
           )}
         </div>
       ))}
