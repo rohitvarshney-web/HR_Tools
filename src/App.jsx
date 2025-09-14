@@ -1122,6 +1122,8 @@ export default function App() {
                   <div className="text-xs text-gray-400 mt-2">Search filters job title, department or location.</div>
                 </div>
 
+                <h2 className="font-semibold mb-4">Openings</h2>
+                
                 <div className="space-y-4">
                   {filteredOpeningsForJobs.length === 0 && <div className="text-sm text-gray-500">No openings match the selected filters or search.</div>}
 
