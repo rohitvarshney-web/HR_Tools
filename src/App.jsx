@@ -167,7 +167,7 @@ export default function App() {
   const [forms, setForms] = useState({});
   const [responses, setResponses] = useState([]);
   const [questionBank, setQuestionBank] = useState([]);
-
+  const [stageStatusMapping, setStageStatusMapping] = useState({});
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
 
@@ -268,6 +268,14 @@ export default function App() {
       await loadResponses();
       await loadForms();
       await loadQuestionBank();
+      // fetch stage->status mapping from backend (server = source of truth)
+      try {
+        const mapping = await apiFetch('/api/stage-status-mapping');
+        setStageStatusMapping(mapping || {});
+      } catch (err) {
+        console.warn('Could not fetch stage-status mapping', err);
+        setStageStatusMapping({});
+      }
     } catch (err) {
       console.error('fetchProfile', err);
       localStorage.removeItem('token');
@@ -880,6 +888,21 @@ export default function App() {
     }
   }
 
+
+    // Use server-provided mapping if available; fallback to building set from responses
+  function getStatusesForStage(stage, currentStatus) {
+    if (stage && stageStatusMapping && stageStatusMapping[stage]) {
+      return stageStatusMapping[stage];
+    }
+    // fallback: gather unique statuses from existing responses (so UI still offers something)
+    const set = new Set();
+    responses.forEach(r => { if (r.status) set.add(r.status); });
+    if (currentStatus && !set.has(currentStatus)) set.add(currentStatus);
+    if (set.size) return Array.from(set);
+    return [currentStatus || "Applied", "Pending", "Scheduled", "Rejected", "Offer Accepted", "Offered", "Joined"];
+  }
+
+
   /* -------------------------
      Toggle / Enable-Disable logic & propagation
      - opening -> form -> responses (propagate immediately)
@@ -1460,19 +1483,19 @@ export default function App() {
 
                             <div className="w-[200px] flex flex-col items-end">
                               <div className="text-xs text-gray-500 mb-1">Status</div>
-                              <select
-                                onClick={(e) => e.stopPropagation()}
-                                value={resp.status || 'Applied'}
-                                onChange={(e) => updateCandidateStatus(resp.id, e.target.value)}
-                                className="border p-2 rounded"
-                              >
-                                <option>Applied</option>
-                                <option>Screening</option>
-                                <option>Interview</option>
-                                <option>Offer</option>
-                                <option>Hired</option>
-                                <option>Rejected</option>
-                              </select>
+                             <select
+  onClick={(e) => e.stopPropagation()}
+  value={resp.status || 'Applied'}
+  onChange={(e) => updateCandidateStatus(resp.id, e.target.value)}
+  className="border p-2 rounded"
+>
+  {(() => {
+    // determine stage from response (try likely field names)
+    const stage = resp.currentStage || resp.stage || resp.current_stage || null;
+    const allowed = getStatusesForStage(stage, resp.status);
+    return allowed.map(s => <option key={s} value={s}>{s}</option>);
+  })()}
+</select>
 
                               <div className="mt-3 text-xs">
                                 <label className="inline-flex items-center gap-2">
