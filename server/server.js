@@ -45,6 +45,127 @@ const SCOPES = [
 const MONGO_URI = process.env.MONGO_URI || null;
 const MONGO_DB_NAME = process.env.MONGO_DB_NAME || 'hrtool';
 
+
+/** ---------- Stage -> allowed statuses mapping (single source of truth) ---------- **/
+const stageStatusMapping = {
+  "Applied": [
+    "Pending", // Default
+    "Rejected",
+    "Candidate Withdrew"
+  ],
+
+  "Introductory call": [
+    "Pending", // Default
+    "Slot Not Selected",
+    "Scheduled",
+    "To be rescheduled",
+    "No Show (To be rescheduled)",
+    "Rejected",
+    "Ghosted",
+    "On Hold",
+    "Withdrew",
+    "Candidate Withdrew"
+  ],
+
+  "In-person Interview": [
+    "Pending", // Default
+    "Slot Not Selected",
+    "Scheduled",
+    "To be rescheduled",
+    "No Show (To be rescheduled)",
+    "Feedback Pending",
+    "Rejected",
+    "Ghosted",
+    "On Hold",
+    "Candidate Withdrew"
+  ],
+
+  "Virtual Interview01": [
+    "Pending", // Default
+    "Slot Not Selected",
+    "Scheduled",
+    "To be rescheduled",
+    "No Show (To be rescheduled)",
+    "Feedback Pending",
+    "Rejected",
+    "Ghosted",
+    "On Hold",
+    "Candidate Withdrew"
+  ],
+
+  "Virtual Interview02": [
+    "Pending", // Default
+    "Slot Not Selected",
+    "Scheduled",
+    "To be rescheduled",
+    "No Show (To be rescheduled)",
+    "Feedback Pending",
+    "Rejected",
+    "Ghosted",
+    "On Hold",
+    "Candidate Withdrew"
+  ],
+
+  "Virtual Interview 03": [
+    "Pending", // Default
+    "Slot Not Selected",
+    "Scheduled",
+    "To be rescheduled",
+    "No Show (To be rescheduled)",
+    "Feedback Pending",
+    "Rejected",
+    "Ghosted",
+    "On Hold",
+    "Candidate Withdrew"
+  ],
+
+  "Problem statement": [
+    "Pending", // Default
+    "Sent",
+    "Rejected",
+    "Ghosted",
+    "On Hold",
+    "Candidate Withdrew"
+  ],
+
+  "Aptitude test": [
+    "Pending", // Default
+    "Sent",
+    "Scheduled",
+    "Rejected",
+    "Ghosted",
+    "On Hold",
+    "Candidate Withdrew"
+  ],
+
+  "Final interview": [
+    "Pending", // Default
+    "Slot Not Selected",
+    "Scheduled",
+    "To be rescheduled",
+    "No Show (To be rescheduled)",
+    "Feedback Pending",
+    "Rejected",
+    "Ghosted",
+    "On Hold",
+    "Candidate Withdrew"
+  ],
+
+  "Offer Stage": [
+    "Offered", // Default
+    "Offer Accepted",
+    "Offer Declined",
+    "Offer Revoked",
+    "Candidate Withdrew"
+  ],
+
+  "Joined": [
+    "To be joining", // Default
+    "Joined"
+  ]
+};
+
+
 /** ---------- HELPERS: FILE I/O ---------- **/
 function readJsonFile(filePath, defaultVal = null) {
   try {
@@ -627,6 +748,23 @@ app.delete('/api/questions/:id', authMiddleware, async (req, res) => {
   } catch (err) { console.error('DELETE /api/questions/:id', err); return res.status(500).json({ error: 'server_error' }); }
 });
 
+
+// Return full mapping (protected — optional; require auth)
+app.get('/api/stages-statuses', authMiddleware, (req, res) => {
+  return res.json(stageStatusMapping);
+});
+
+// Return statuses for a single stage (protected)
+app.get('/api/stages/:stage/statuses', authMiddleware, (req, res) => {
+  const stage = req.params.stage;
+  if (!stage) return res.status(400).json({ error: 'missing_stage' });
+  const statuses = stageStatusMapping[stage];
+  if (!statuses) return res.status(404).json({ error: 'stage_not_found' });
+  return res.json({ stage, statuses });
+});
+
+
+
 /* Responses endpoints */
 // Support optional query ?openingId= to return only responses for a given opening
 app.get('/api/responses', authMiddleware, async (req, res) => {
@@ -662,7 +800,7 @@ app.put('/api/responses/:id', authMiddleware, async (req, res) => {
 app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
   try {
     const id = req.params.id;
-    const { status } = req.body;
+    const { status, stage: requestedStage } = req.body;
     if (!status) return res.status(400).json({ error: 'missing_status' });
 
     let updatedResp = null;
@@ -679,32 +817,83 @@ app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
       return updateRes && updateRes.value ? normalizeDoc(updateRes.value) : null;
     }
 
+    // Helper: fetch existing response (by id or ObjectId)
+    async function fetchExistingResponseById(rawId) {
+      if (!db) return null;
+      let doc = await db.collection('responses').findOne({ id: rawId });
+      if (doc) return normalizeDoc(doc);
+      // try ObjectId if looks like one
+      if (/^[0-9a-fA-F]{24}$/.test(rawId)) {
+        try {
+          const { ObjectId } = require('mongodb');
+          doc = await db.collection('responses').findOne({ _id: new ObjectId(rawId) });
+          return doc ? normalizeDoc(doc) : null;
+        } catch (e) {
+          // ignore conversion errors
+        }
+      }
+      return null;
+    }
+
+    // Helper: validate status against mapping for a stage (mapping may not have entry)
+    // stageCandidates is array of possible stages, first matching mapping will be used.
+    function validateStatusForStage(stageCandidates = []) {
+      for (const s of stageCandidates) {
+        if (!s) continue;
+        const allowed = stageStatusMapping && stageStatusMapping[s];
+        if (allowed) {
+          if (!allowed.includes(status)) {
+            return { ok: false, stage: s, allowed };
+          }
+          return { ok: true, stage: s, allowed };
+        }
+      }
+      // No mapping found for any candidate stage -> treat as allowed (no mapping to validate against)
+      return { ok: true, stage: null, allowed: null };
+    }
+
     if (db) {
-      // 1) Try update by custom 'id' field (resp_...)
+      // fetch response first so we can validate stage -> status
+      const existingResp = await fetchExistingResponseById(id);
+
+      // build candidates: explicit requestedStage first, then fields on existing response
+      const stageCandidates = [];
+      if (requestedStage) stageCandidates.push(requestedStage);
+      if (existingResp) {
+        if (existingResp.stage) stageCandidates.push(existingResp.stage);
+        if (existingResp.currentStage) stageCandidates.push(existingResp.currentStage);
+        if (existingResp.current_stage) stageCandidates.push(existingResp.current_stage);
+      }
+
+      const validation = validateStatusForStage(stageCandidates);
+      if (!validation.ok) {
+        return res.status(400).json({ error: 'status_not_allowed_for_stage', stage: validation.stage, allowed: validation.allowed });
+      }
+
+      // If caller provided explicit stage and response exists, optionally persist the stage as well
+      if (requestedStage && existingResp) {
+        try {
+          await db.collection('responses').updateOne({ id: existingResp.id }, { $set: { stage: requestedStage, updatedAt: now } });
+        } catch (err) {
+          // non-fatal: log and continue
+          console.warn('Failed to persist stage on response:', err && err.message);
+        }
+      }
+
+      // perform the status update (try by id)
       updatedResp = await tryUpdate({ id });
 
-      // 2) If not found, and id looks like a 24-hex ObjectId, try that
-      if (!updatedResp) {
-        const { ObjectId } = require('mongodb');
-        if (/^[0-9a-fA-F]{24}$/.test(id)) {
-          try {
-            updatedResp = await tryUpdate({ _id: new ObjectId(id) });
-          } catch (e) {
-            // ignore conversion errors
-          }
+      // fallback: if not found by id, try ObjectId selector (if id looks like one)
+      if (!updatedResp && /^[0-9a-fA-F]{24}$/.test(id)) {
+        try {
+          const { ObjectId } = require('mongodb');
+          updatedResp = await tryUpdate({ _id: new ObjectId(id) });
+        } catch (e) {
+          // ignore conversion errors
         }
       }
 
-      // 3) If still not found, also try a fallback: perhaps caller sent a numeric timestamp id (resp_123...)
-      //    try to match by id suffix if id starts with 'resp_' (optional, non-destructive)
-      if (!updatedResp && typeof id === 'string' && id.startsWith('resp_')) {
-        // try matching the numeric suffix
-        const suffix = id.split('resp_')[1];
-        if (suffix && /^[0-9]+$/.test(suffix)) {
-          // try find by id exact (already tried) — nothing more to do here
-        }
-      }
-
+      // If still not found, return 404
       if (!updatedResp) {
         return res.status(404).json({ error: 'response_not_found' });
       }
@@ -713,6 +902,23 @@ app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
       const data = readData();
       const idx = (data.responses || []).findIndex(r => r.id === id);
       if (idx === -1) return res.status(404).json({ error: 'response_not_found' });
+
+      // Build stageCandidates from requestedStage and stored fields
+      const stored = data.responses[idx];
+      const stageCandidates = [];
+      if (requestedStage) stageCandidates.push(requestedStage);
+      if (stored.stage) stageCandidates.push(stored.stage);
+      if (stored.currentStage) stageCandidates.push(stored.currentStage);
+      if (stored.current_stage) stageCandidates.push(stored.current_stage);
+
+      const validation = validateStatusForStage(stageCandidates);
+      if (!validation.ok) {
+        return res.status(400).json({ error: 'status_not_allowed_for_stage', stage: validation.stage, allowed: validation.allowed });
+      }
+
+      // optionally persist stage
+      if (requestedStage) data.responses[idx].stage = requestedStage;
+
       data.responses[idx].status = status;
       data.responses[idx].updatedAt = now;
       writeData(data);
@@ -747,6 +953,7 @@ app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
     return res.status(500).json({ error: 'server_error', message: err?.message || 'unknown' });
   }
 });
+
 
 
 /** ---------- Toggle endpoints (is_deleted + cascade) ---------- **/
