@@ -269,13 +269,13 @@ export default function App() {
       await loadForms();
       await loadQuestionBank();
       // fetch stage->status mapping from backend (server = source of truth)
-      try {
-        const mapping = await apiFetch('/api/stage-status-mapping');
-        setStageStatusMapping(mapping || {});
-      } catch (err) {
-        console.warn('Could not fetch stage-status mapping', err);
-        setStageStatusMapping({});
-      }
+try {
+  const mapping = await apiFetch('/api/stages-statuses'); // <-- correct endpoint
+  setStageStatusMapping(mapping || {});
+} catch (err) {
+  console.warn('Could not fetch stage-status mapping', err);
+  setStageStatusMapping({});
+}
     } catch (err) {
       console.error('fetchProfile', err);
       localStorage.removeItem('token');
@@ -867,26 +867,49 @@ export default function App() {
   /* -------------------------
      Hiring management helpers
   ------------------------- */
-  async function updateCandidateStatus(responseId, newStatus) {
-    try {
-      setResponses(prev => prev.map(r => r.id === responseId ? { ...r, status: newStatus } : r));
-      if (!localStorage.getItem('token')) {
-        alert('Not signed-in: status changed locally only.');
-        return;
-      }
-      const payload = { status: newStatus };
-      const res = await apiFetch(`/api/responses/${encodeURIComponent(responseId)}/status`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      if (res && res.updatedResp) {
-        setResponses(prev => prev.map(r => r.id === responseId ? res.updatedResp : r));
-      } else {
-        await loadResponses();
-      }
-    } catch (err) {
-      console.error('Failed to update candidate status', err);
-      alert('Status update failed: ' + (err?.body?.error || err.message || 'unknown'));
+async function updateCandidateStatus(responseId, newStatus, newStage = undefined) {
+  try {
+    // optimistic local update for snappy UI (status and optionally stage)
+    setResponses(prev => prev.map(r => r.id === responseId ? { ...r, status: newStatus, ...(newStage !== undefined ? { stage: newStage } : {}) } : r));
+    if (selectedResponse && selectedResponse.id === responseId) {
+      setSelectedResponse(prev => prev ? { ...prev, status: newStatus, ...(newStage !== undefined ? { stage: newStage } : {}) } : prev);
+    }
+
+    if (!localStorage.getItem('token')) {
+      alert('Not signed-in: change saved locally only.');
+      return;
+    }
+
+    const payload = { status: newStatus };
+    if (newStage !== undefined) payload.stage = newStage;
+
+    const res = await apiFetch(`/api/responses/${encodeURIComponent(responseId)}/status`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (res && res.updatedResp) {
+      // authoritative update from backend
+      setResponses(prev => prev.map(r => r.id === responseId ? res.updatedResp : r));
+      if (selectedResponse && selectedResponse.id === responseId) setSelectedResponse(res.updatedResp);
+    } else {
       await loadResponses();
     }
+  } catch (err) {
+    console.error('Failed to update candidate status/stage', err);
+    alert('Status/Stage update failed: ' + (err?.body?.error || err.message || 'unknown'));
+    await loadResponses();
+    // refresh modal if open
+    if (selectedResponse && selectedResponse.id === responseId) {
+      try {
+        const fresh = await apiFetch(`/api/responses/${encodeURIComponent(responseId)}`);
+        if (fresh) setSelectedResponse(fresh);
+      } catch (e) { /* ignore */ }
+    }
   }
+}
+
 
 
     // Use server-provided mapping if available; fallback to building set from responses
@@ -1482,37 +1505,40 @@ export default function App() {
                             </div>
 
                             <div className="w-[200px] flex flex-col items-end">
-                              <div className="text-xs text-gray-500 mb-1">Status</div>
-                             <select
-  onClick={(e) => e.stopPropagation()}
-  value={resp.status || 'Applied'}
-  onChange={(e) => updateCandidateStatus(resp.id, e.target.value)}
-  className="border p-2 rounded"
->
-  {(() => {
-    // determine stage from response (try likely field names)
-    const stage = resp.currentStage || resp.stage || resp.current_stage || null;
-    const allowed = getStatusesForStage(stage, resp.status);
-    return allowed.map(s => <option key={s} value={s}>{s}</option>);
-  })()}
-</select>
+  <div className="text-xs text-gray-500 mb-1">Stage</div>
+  <div className="font-medium mb-3">{(resp.stage || resp.currentStage || resp.current_stage) || '—'}</div>
 
-                              <div className="mt-3 text-xs">
-                                <label className="inline-flex items-center gap-2">
-                                  <input
-                                    onClick={(e) => e.stopPropagation()}
-                                    type="checkbox"
-                                    checked={!resp.is_deleted}
-                                    onChange={(e) => {
-                                      const toDeleted = !e.target.checked;
-                                      toggleResponseDeleted(resp.id, toDeleted);
-                                    }}
-                                  />
-                                  <span className="text-xs">{resp.is_deleted ? 'Disabled' : 'Active'}</span>
-                                </label>
-                              </div>
-                            </div>
-                          </div>
+  <div className="text-xs text-gray-500 mb-1">Status</div>
+  <select
+    onClick={(e) => e.stopPropagation()}
+    value={resp.status || 'Applied'}
+    onChange={(e) => updateCandidateStatus(resp.id, e.target.value)}
+    className="border p-2 rounded"
+  >
+    {(() => {
+      // determine stage from response (try likely field names)
+      const stage = resp.currentStage || resp.stage || resp.current_stage || null;
+      const allowed = getStatusesForStage(stage, resp.status);
+      return allowed.map(s => <option key={s} value={s}>{s}</option>);
+    })()}
+  </select>
+
+  <div className="mt-3 text-xs">
+    <label className="inline-flex items-center gap-2">
+      <input
+        onClick={(e) => e.stopPropagation()}
+        type="checkbox"
+        checked={!resp.is_deleted}
+        onChange={(e) => {
+          const toDeleted = !e.target.checked;
+          toggleResponseDeleted(resp.id, toDeleted);
+        }}
+      />
+      <span className="text-xs">{resp.is_deleted ? 'Disabled' : 'Active'}</span>
+    </label>
+  </div>
+</div>
+
 
                           <div className="absolute right-6 bottom-4 text-sm text-gray-500">
                             Applied at: {resp.createdAt ? new Date(resp.createdAt).toLocaleString() : ''}
