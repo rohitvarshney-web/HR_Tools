@@ -5,3 +5,12 @@
     { "id": "u_1", "email": "rohit.varshney@stampmyvisa.com", "name": "Rohit Varshney","initials": "RV", "role": "admin", "createdAt": "2025-09-12T00:00:00Z" }
   ]
 }
+
+
+{
+  "openings": [],
+  "responses": [],
+  "users": [
+    { "id": "u_2", "email": "rahul@stampmyvisa.com", "name": "Rahul Borude","initials": "RB", "role": "admin", "createdAt": "2025-09-15T00:00:00Z" }
+  ]
+}
