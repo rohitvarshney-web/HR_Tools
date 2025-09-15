@@ -262,8 +262,24 @@ async function connectMongo() {
   }
 }
 
-
-
+/** ---------- Startup migration helper: ensure is_deleted exists ---------- **/
+async function ensureIsDeletedField() {
+  if (!db) return;
+  const collections = ['openings', 'forms', 'responses'];
+  for (const col of collections) {
+    try {
+      const res = await db.collection(col).updateMany(
+        { is_deleted: { $exists: false } },
+        { $set: { is_deleted: false } }
+      );
+      const matched = res.matchedCount !== undefined ? res.matchedCount : (res.n || 0);
+      const modified = res.modifiedCount !== undefined ? res.modifiedCount : (res.nModified || 0);
+      console.log(`[migration:is_deleted] ${col}: matched=${matched}, modified=${modified}`);
+    } catch (err) {
+      console.error(`[migration:is_deleted] error on ${col}`, err && err.message);
+    }
+  }
+}
 
 /** ---------- Normalizers ---------- **/
 function normalizeDoc(doc) { if (!doc) return doc; const copy = { ...doc }; delete copy._id; return copy; }
@@ -430,13 +446,18 @@ async function deleteQuestionInStore(id) {
 }
 
 /* RESPONSES */
-async function listResponsesFromStore() {
+async function listResponsesFromStore(query = {}) {
+  // accept optional query filter { openingId }
   if (db) {
-    const rows = await db.collection('responses').find({}).sort({ createdAt: -1 }).toArray();
+    const q = {};
+    if (query.openingId) q.openingId = query.openingId;
+    const rows = await db.collection('responses').find(q).sort({ createdAt: -1 }).toArray();
     return rows.map(normalizeDoc);
   }
   const data = readData();
-  return data.responses || [];
+  const arr = data.responses || [];
+  if (query.openingId) return arr.filter(r => r.openingId === query.openingId);
+  return arr;
 }
 async function getResponseFromStore(id) {
   if (db) return normalizeDoc(await db.collection('responses').findOne({ id }));
@@ -607,13 +628,34 @@ app.delete('/api/questions/:id', authMiddleware, async (req, res) => {
 });
 
 /* Responses endpoints */
+// Support optional query ?openingId= to return only responses for a given opening
 app.get('/api/responses', authMiddleware, async (req, res) => {
-  try { const rows = await listResponsesFromStore(); return res.json(rows || []); }
-  catch (err) { console.error('GET /api/responses', err); return res.status(500).json({ error: 'server_error' }); }
+  try {
+    const openingId = req.query.openingId;
+    const rows = await listResponsesFromStore(openingId ? { openingId } : {});
+    return res.json(rows || []);
+  } catch (err) { console.error('GET /api/responses', err); return res.status(500).json({ error: 'server_error' }); }
 });
 app.get('/api/responses/:id', authMiddleware, async (req, res) => {
   try { const r = await getResponseFromStore(req.params.id); if (!r) return res.status(404).json({ error: 'response_not_found' }); return res.json(r); }
   catch (err) { console.error('GET /api/responses/:id', err); return res.status(500).json({ error: 'server_error' }); }
+});
+
+// Generic update for a response (used by frontend to update fields like is_deleted)
+app.put('/api/responses/:id', authMiddleware, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const patch = { ...req.body };
+    // protect id field
+    delete patch.id;
+    patch.updatedAt = new Date().toISOString();
+    const updated = await updateResponseInStore(id, patch);
+    if (!updated) return res.status(404).json({ error: 'response_not_found' });
+    return res.json({ ok: true, updated });
+  } catch (err) {
+    console.error('PUT /api/responses/:id error', err && err.stack);
+    return res.status(500).json({ error: 'server_error' });
+  }
 });
 
 // Update a candidate's status (persist to DB/files + update sheet row if known)
@@ -994,10 +1036,16 @@ app.post('/api/apply', upload.any(), async (req, res) => {
 // Health
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-/** ---------- STARTUP: try Mongo, fallback to files ---------- **/
+/** ---------- STARTUP: try Mongo, run migration, fallback to files ---------- **/
 connectMongo()
-  .then(() => {
-    console.log('[startup] Mongo attempt finished (connected or verified). Starting HTTP server...');
+  .then(async () => {
+    console.log('[startup] Mongo attempt finished (connected or verified). Running startup migrations...');
+    try {
+      await ensureIsDeletedField();
+    } catch (err) {
+      console.warn('[startup] ensureIsDeletedField failed', err && err.message);
+    }
+    console.log('[startup] Starting HTTP server...');
     app.listen(PORT, () => {
       console.log(`Backend listening on ${PORT}`);
     });
