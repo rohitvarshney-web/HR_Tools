@@ -120,7 +120,7 @@ const stageStatusMapping = {
   ],
 
   "Problem statement": [
-    "Pending", // Default
+    "Pending", //Default
     "Sent",
     "Rejected",
     "Ghosted",
@@ -129,7 +129,7 @@ const stageStatusMapping = {
   ],
 
   "Aptitude test": [
-    "Pending", // Default
+    "Pending", //Default
     "Sent",
     "Scheduled",
     "Rejected",
@@ -160,7 +160,7 @@ const stageStatusMapping = {
   ],
 
   "Joined": [
-    "To be joining", // Default
+    "To be joining", //Default
     "Joined"
   ]
 };
@@ -239,14 +239,9 @@ let googleAuthInstance = null;
 function getAuthClient() {
   if (googleAuthInstance) return googleAuthInstance;
   if (process.env.GOOGLE_SERVICE_ACCOUNT_CREDS) {
-    // guard JSON.parse to avoid crash if env var is invalid
-    try {
-      const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_CREDS);
-      googleAuthInstance = new google.auth.GoogleAuth({ credentials: creds, scopes: SCOPES });
-      return googleAuthInstance;
-    } catch (err) {
-      throw new Error('Invalid GOOGLE_SERVICE_ACCOUNT_CREDS (JSON parse failed): ' + (err && err.message));
-    }
+    const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_CREDS);
+    googleAuthInstance = new google.auth.GoogleAuth({ credentials: creds, scopes: SCOPES });
+    return googleAuthInstance;
   }
   if (process.env.GOOGLE_SERVICE_ACCOUNT_FILE) {
     const keyFile = process.env.GOOGLE_SERVICE_ACCOUNT_FILE;
@@ -426,6 +421,7 @@ async function getOpeningFromStore(id) {
   return arr.find(o => o.id === id);
 }
 async function createOpeningInStore(op) {
+  // ensure is_deleted default exists
   if (op.is_deleted === undefined) op.is_deleted = false;
   if (db) { await db.collection('openings').insertOne(op); return op; }
   const arr = readJsonFile(OPENINGS_FILE, []);
@@ -434,6 +430,8 @@ async function createOpeningInStore(op) {
   return op;
 }
 async function updateOpeningInStore(id, fields) {
+  // only persist is_deleted if explicitly provided (caller controls it)
+  // if fields.is_deleted is undefined, we don't alter the field
   const patch = { ...fields };
   if (patch.is_deleted === undefined) delete patch.is_deleted;
   if (db) {
@@ -516,10 +514,10 @@ async function deleteFormInStore(id) {
     const res = await db.collection('forms').deleteOne({ id });
     return { ok: true, deleted: res.deletedCount || 0 };
   }
-  const arr = readJsonFile(QUESTIONS_FILE, []);
+  const arr = readJsonFile(FORMS_FILE, []);
   const newArr = arr.filter(f => f.id !== id);
   if (newArr.length === arr.length) return { ok: false, deleted: 0 };
-  writeJsonFileAtomic(QUESTIONS_FILE, newArr);
+  writeJsonFileAtomic(FORMS_FILE, newArr);
   return { ok: true, deleted: arr.length - newArr.length };
 }
 
@@ -570,6 +568,7 @@ async function deleteQuestionInStore(id) {
 
 /* RESPONSES */
 async function listResponsesFromStore(query = {}) {
+  // accept optional query filter { openingId }
   if (db) {
     const q = {};
     if (query.openingId) q.openingId = query.openingId;
@@ -749,12 +748,13 @@ app.delete('/api/questions/:id', authMiddleware, async (req, res) => {
   } catch (err) { console.error('DELETE /api/questions/:id', err); return res.status(500).json({ error: 'server_error' }); }
 });
 
+
 // Return full mapping (protected — optional; require auth)
 app.get('/api/stages-statuses', authMiddleware, (req, res) => {
   return res.json(stageStatusMapping);
 });
 
-// Compatibility route used by frontend: return mapping (protected)
+// Compatibility route: frontend expects /api/stage-status-mapping
 app.get('/api/stage-status-mapping', authMiddleware, (req, res) => {
   return res.json(stageStatusMapping);
 });
@@ -767,6 +767,8 @@ app.get('/api/stages/:stage/statuses', authMiddleware, (req, res) => {
   if (!statuses) return res.status(404).json({ error: 'stage_not_found' });
   return res.json({ stage, statuses });
 });
+
+
 
 /* Responses endpoints */
 // Support optional query ?openingId= to return only responses for a given opening
@@ -825,6 +827,7 @@ app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
       if (!db) return null;
       let doc = await db.collection('responses').findOne({ id: rawId });
       if (doc) return normalizeDoc(doc);
+      // try ObjectId if looks like one
       if (/^[0-9a-fA-F]{24}$/.test(rawId)) {
         try {
           const { ObjectId } = require('mongodb');
@@ -838,6 +841,7 @@ app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
     }
 
     // Helper: validate status against mapping for a stage (mapping may not have entry)
+    // stageCandidates is array of possible stages, first matching mapping will be used.
     function validateStatusForStage(stageCandidates = []) {
       for (const s of stageCandidates) {
         if (!s) continue;
@@ -854,8 +858,10 @@ app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
     }
 
     if (db) {
+      // fetch response first so we can validate stage -> status
       const existingResp = await fetchExistingResponseById(id);
 
+      // build candidates: explicit requestedStage first, then fields on existing response
       const stageCandidates = [];
       if (requestedStage) stageCandidates.push(requestedStage);
       if (existingResp) {
@@ -869,16 +875,20 @@ app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
         return res.status(400).json({ error: 'status_not_allowed_for_stage', stage: validation.stage, allowed: validation.allowed });
       }
 
+      // If caller provided explicit stage and response exists, optionally persist the stage as well
       if (requestedStage && existingResp) {
         try {
           await db.collection('responses').updateOne({ id: existingResp.id }, { $set: { stage: requestedStage, updatedAt: now } });
         } catch (err) {
+          // non-fatal: log and continue
           console.warn('Failed to persist stage on response:', err && err.message);
         }
       }
 
+      // perform the status update (try by id)
       updatedResp = await tryUpdate({ id });
 
+      // fallback: if not found by id, try ObjectId selector (if id looks like one)
       if (!updatedResp && /^[0-9a-fA-F]{24}$/.test(id)) {
         try {
           const { ObjectId } = require('mongodb');
@@ -888,14 +898,17 @@ app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
         }
       }
 
+      // If still not found, return 404
       if (!updatedResp) {
         return res.status(404).json({ error: 'response_not_found' });
       }
     } else {
+      // file-backed store
       const data = readData();
       const idx = (data.responses || []).findIndex(r => r.id === id);
       if (idx === -1) return res.status(404).json({ error: 'response_not_found' });
 
+      // Build stageCandidates from requestedStage and stored fields
       const stored = data.responses[idx];
       const stageCandidates = [];
       if (requestedStage) stageCandidates.push(requestedStage);
@@ -908,6 +921,7 @@ app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
         return res.status(400).json({ error: 'status_not_allowed_for_stage', stage: validation.stage, allowed: validation.allowed });
       }
 
+      // optionally persist stage
       if (requestedStage) data.responses[idx].stage = requestedStage;
 
       data.responses[idx].status = status;
@@ -916,6 +930,7 @@ app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
       updatedResp = data.responses[idx];
     }
 
+    // If sheetRange stored, update that row in Google Sheet (same as before)
     if (SHEET_ID && updatedResp && updatedResp.sheetRange) {
       try {
         const sheetRange = updatedResp.sheetRange;
@@ -932,6 +947,7 @@ app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
         console.log(`[api] updated sheet ${sheetRange} with status=${status}`);
       } catch (err) {
         console.error('Failed to update Google Sheet row for response', id, err && err.message);
+        // don't fail the whole request for sheet errors; return success with sheetUpdate:failed
         return res.status(200).json({ ok: true, updatedResp, sheetUpdate: 'failed', sheetError: (err && err.message) });
       }
     }
@@ -942,6 +958,8 @@ app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
     return res.status(500).json({ error: 'server_error', message: err?.message || 'unknown' });
   }
 });
+
+
 
 /** ---------- Toggle endpoints (is_deleted + cascade) ---------- **/
 
@@ -1025,7 +1043,12 @@ app.post('/public/openings/:id/schema', async (req, res) => {
   } catch (err) { console.error('POST /public/openings/:id/schema', err); return res.status(500).json({ error: 'server_error' }); }
 });
 
-/* Apply endpoint - store response, upload resume to Drive (strict: no local fallback), append to Sheet and record sheetRange */
+/* Apply endpoint - store response, upload resume to Drive (strict: no local fallback), append to Sheet and record sheetRange
+   - accept any uploaded file field names (upload.any())
+   - map submitted answer keys (ids or labels) to question labels using form schema (if available)
+   - extract mandatory fields (fullName, email, phone, resumeLink) to top-level response fields
+   - append sheet row with separate columns for those fields
+*/
 app.post('/api/apply', upload.any(), async (req, res) => {
   try {
     const openingId = req.query.opening || req.body.opening;
@@ -1036,22 +1059,28 @@ app.post('/api/apply', upload.any(), async (req, res) => {
     const openingTitle = opening ? opening.title : null;
     const openingLocation = opening ? opening.location : null;
 
+    // resume upload (strict: require Drive upload to succeed if a file was uploaded)
     let resumeLink = null;
     let resumeFileObj = null;
 
+    // Accept multiple possible fieldnames for resume (q_resume, resume, resumeFile, cv, etc.)
     const possibleResumeFieldNames = new Set(['resume', 'q_resume', 'resumeFile', 'cv', 'q_cv', 'file', 'attachment', 'upload_resume']);
     if (req.files && Array.isArray(req.files) && req.files.length > 0) {
+      // find a file that looks like the resume or fallback to first file
       resumeFileObj = req.files.find(f => possibleResumeFieldNames.has((f.fieldname || '').toString())) || req.files[0];
     }
 
     if (resumeFileObj && resumeFileObj.buffer) {
       const filename = `${Date.now()}_${(resumeFileObj.originalname || 'resume')}`;
+
+      // If DRIVE_FOLDER_ID not configured, return config error to caller
       if (!DRIVE_FOLDER_ID) {
         console.error('Drive folder ID not set; cannot upload resume.');
         return res.status(500).json({ error: 'drive_config_missing', message: 'Server is not configured to upload resumes to Google Drive. Please contact the administrator.' });
       }
 
       try {
+        // Upload to Drive and set public read permission (best-effort)
         const bufferStream = new stream.PassThrough(); bufferStream.end(resumeFileObj.buffer);
         const drive = await getDriveService();
         const created = await drive.files.create({
@@ -1066,32 +1095,40 @@ app.post('/api/apply', upload.any(), async (req, res) => {
           throw new Error('no_file_id_returned');
         }
 
+        // make file readable by anyone (best-effort; ignore permission errors but still return link)
         try {
           await drive.permissions.create({ fileId, requestBody: { role: 'reader', type: 'anyone' }, supportsAllDrives: true });
         } catch (permErr) {
           console.warn('drive.permissions.create failed (may be org policy) - continuing, permission error:', permErr && permErr.message);
         }
 
+        // fetch metadata to pick best link
         const meta = await drive.files.get({ fileId, fields: 'id, webViewLink, webContentLink' }).catch(() => null);
         resumeLink = (meta && (meta.data && (meta.data.webViewLink || meta.data.webContentLink))) || `https://drive.google.com/file/d/${fileId}/view`;
         console.log('Drive upload success:', resumeLink);
       } catch (err) {
         console.error('Drive upload failed:', err && (err.stack || err.message));
+        // IMPORTANT: do NOT save file locally. Inform frontend to re-upload.
         return res.status(502).json({ error: 'drive_upload_failed', message: 'Resume upload to Google Drive failed. Please re-upload your resume.' });
       }
     } else {
+      // No file uploaded — still allow (maybe form without resume), but set resumeLink null
       console.log('No resume file provided in submission.');
     }
 
+    // collect raw answers posted by frontend (keys can be question ids like "q_123" OR labels if frontend sends labels)
     const rawAnswers = {};
     Object.keys(req.body || {}).forEach(k => {
+      // skip special internal keys used for form metadata (opening, src etc.)
       if (['opening','src','_csrf'].includes(k)) return;
       rawAnswers[k] = req.body[k];
     });
 
+    // try to fetch server-stored form for this opening (if any) to resolve question ids -> labels
     const formForOpening = await getFormForOpeningFromStore(openingId);
     const formQuestions = (formForOpening && formForOpening.data && Array.isArray(formForOpening.data.questions)) ? formForOpening.data.questions : [];
 
+    // Build mapping from possible keys (ids / questionId / localLabel / id) -> label
     const idToLabel = {};
     for (const fq of formQuestions) {
       let label = null;
@@ -1120,6 +1157,7 @@ app.post('/api/apply', upload.any(), async (req, res) => {
       }
     }
 
+    // Also include global question bank entries
     const questionBank = await listQuestionsFromStore();
     for (const q of (questionBank || [])) {
       if (!q || !q.id) continue;
@@ -1131,6 +1169,7 @@ app.post('/api/apply', upload.any(), async (req, res) => {
       }
     }
 
+    // Normalize rawAnswers into labelAnswers: label -> answer
     const labelAnswers = {};
     for (const k of Object.keys(rawAnswers)) {
       const val = rawAnswers[k];
@@ -1146,6 +1185,7 @@ app.post('/api/apply', upload.any(), async (req, res) => {
       labelAnswers[label] = val;
     }
 
+    // Extract mandatory fields into top-level properties (best-effort)
     const findAndRemoveFirstMatch = (candidates) => {
       for (const cand of candidates) {
         if (labelAnswers[cand] !== undefined) {
@@ -1184,6 +1224,7 @@ app.post('/api/apply', upload.any(), async (req, res) => {
     const extractedResumeFromAnswers = findAndRemoveFirstMatch(resumeCandidates) || null;
     const finalResumeLink = resumeLink || extractedResumeFromAnswers || null;
 
+    // Build the response object that will be persisted
     const resp = {
       id: `resp_${Date.now()}`,
       openingId,
@@ -1201,6 +1242,7 @@ app.post('/api/apply', upload.any(), async (req, res) => {
       is_deleted: false
     };
 
+    // Prepare sheet row.
     const rowVals = [
       new Date().toISOString(),
       openingId,
@@ -1226,8 +1268,10 @@ app.post('/api/apply', upload.any(), async (req, res) => {
       }
     }
 
+    // persist to DB & file (file kept as legacy)
     try { await createResponseInStore(resp); } catch(e){ console.error('Failed to persist response to store', e && e.message); }
 
+    // Respond success
     return res.json({ ok: true, resumeLink: resp.resumeLink, sheetRange: resp.sheetRange });
   } catch (err) {
     console.error('Error in /api/apply', err && err.stack);
