@@ -666,13 +666,50 @@ app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
     if (!status) return res.status(400).json({ error: 'missing_status' });
 
     let updatedResp = null;
-    // Update in DB or file
     const now = new Date().toISOString();
+
+    // Helper to try update by different selectors
+    async function tryUpdate(selector) {
+      if (!db) return null;
+      const updateRes = await db.collection('responses').findOneAndUpdate(
+        selector,
+        { $set: { status, updatedAt: now } },
+        { returnDocument: 'after' }
+      );
+      return updateRes && updateRes.value ? normalizeDoc(updateRes.value) : null;
+    }
+
     if (db) {
-      const updateRes = await db.collection('responses').findOneAndUpdate({ id }, { $set: { status, updatedAt: now } }, { returnDocument: 'after' });
-      if (!updateRes.value) return res.status(404).json({ error: 'response_not_found' });
-      updatedResp = normalizeDoc(updateRes.value);
+      // 1) Try update by custom 'id' field (resp_...)
+      updatedResp = await tryUpdate({ id });
+
+      // 2) If not found, and id looks like a 24-hex ObjectId, try that
+      if (!updatedResp) {
+        const { ObjectId } = require('mongodb');
+        if (/^[0-9a-fA-F]{24}$/.test(id)) {
+          try {
+            updatedResp = await tryUpdate({ _id: new ObjectId(id) });
+          } catch (e) {
+            // ignore conversion errors
+          }
+        }
+      }
+
+      // 3) If still not found, also try a fallback: perhaps caller sent a numeric timestamp id (resp_123...)
+      //    try to match by id suffix if id starts with 'resp_' (optional, non-destructive)
+      if (!updatedResp && typeof id === 'string' && id.startsWith('resp_')) {
+        // try matching the numeric suffix
+        const suffix = id.split('resp_')[1];
+        if (suffix && /^[0-9]+$/.test(suffix)) {
+          // try find by id exact (already tried) — nothing more to do here
+        }
+      }
+
+      if (!updatedResp) {
+        return res.status(404).json({ error: 'response_not_found' });
+      }
     } else {
+      // file-backed store
       const data = readData();
       const idx = (data.responses || []).findIndex(r => r.id === id);
       if (idx === -1) return res.status(404).json({ error: 'response_not_found' });
@@ -682,28 +719,24 @@ app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
       updatedResp = data.responses[idx];
     }
 
-    // If sheetRange stored, update that row in Google Sheet
+    // If sheetRange stored, update that row in Google Sheet (same as before)
     if (SHEET_ID && updatedResp && updatedResp.sheetRange) {
       try {
-        // Determine the sheet tab from sheetRange (e.g. "Sheet1!A5:F5" => "Sheet1")
         const sheetRange = updatedResp.sheetRange;
         const sheetName = sheetRange.split('!')[0];
-        // read header row to find 'Status' column
         const header = (await readSheetRange(SHEET_ID, `${sheetName}!1:1`))[0] || [];
         let statusIndex = header.findIndex(h => (h || '').toString().toLowerCase().trim() === 'status');
-        // read existing row values
         const existingRow = (await readSheetRange(SHEET_ID, sheetRange))[0] || [];
         if (statusIndex === -1) {
-          // append status as next column (extend existingRow)
-          statusIndex = existingRow.length; // 0-based index
+          statusIndex = existingRow.length;
         }
         while (existingRow.length <= statusIndex) existingRow.push('');
         existingRow[statusIndex] = status;
-        // convert statusIndex (0-based) to A1 range columns: we will update the exact same range (sheetRange)
         await updateSheetRow(SHEET_ID, sheetRange, existingRow);
         console.log(`[api] updated sheet ${sheetRange} with status=${status}`);
       } catch (err) {
         console.error('Failed to update Google Sheet row for response', id, err && err.message);
+        // don't fail the whole request for sheet errors; return success with sheetUpdate:failed
         return res.status(200).json({ ok: true, updatedResp, sheetUpdate: 'failed', sheetError: (err && err.message) });
       }
     }
@@ -714,6 +747,7 @@ app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
     return res.status(500).json({ error: 'server_error', message: err?.message || 'unknown' });
   }
 });
+
 
 /** ---------- Toggle endpoints (is_deleted + cascade) ---------- **/
 
