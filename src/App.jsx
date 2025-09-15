@@ -1547,7 +1547,6 @@ async function updateCandidateStatus(responseId, newStatus, newStage = undefined
                       );
                     })}
 
-                    <div style={{ height: 40 }} />
                   </div>
                 </div>
               </div>
