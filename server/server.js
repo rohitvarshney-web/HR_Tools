@@ -1237,6 +1237,7 @@ app.post('/api/apply', upload.any(), async (req, res) => {
       resumeLink: finalResumeLink,
       answers: labelAnswers,
       createdAt: new Date().toISOString(),
+      stage: 'Applied',
       status: 'Applied',
       sheetRange: null,
       is_deleted: false
