@@ -167,7 +167,7 @@ export default function App() {
   const [forms, setForms] = useState({});
   const [responses, setResponses] = useState([]);
   const [questionBank, setQuestionBank] = useState([]);
-  const [stageStatusMapping, setStageStatusMapping] = useState({});
+
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
 
@@ -268,14 +268,6 @@ export default function App() {
       await loadResponses();
       await loadForms();
       await loadQuestionBank();
-      // fetch stage->status mapping from backend (server = source of truth)
-try {
-  const mapping = await apiFetch('/api/stages-statuses'); // <-- correct endpoint
-  setStageStatusMapping(mapping || {});
-} catch (err) {
-  console.warn('Could not fetch stage-status mapping', err);
-  setStageStatusMapping({});
-}
     } catch (err) {
       console.error('fetchProfile', err);
       localStorage.removeItem('token');
@@ -867,64 +859,26 @@ try {
   /* -------------------------
      Hiring management helpers
   ------------------------- */
-async function updateCandidateStatus(responseId, newStatus, newStage = undefined) {
-  try {
-    // optimistic local update for snappy UI (status and optionally stage)
-    setResponses(prev => prev.map(r => r.id === responseId ? { ...r, status: newStatus, ...(newStage !== undefined ? { stage: newStage } : {}) } : r));
-    if (selectedResponse && selectedResponse.id === responseId) {
-      setSelectedResponse(prev => prev ? { ...prev, status: newStatus, ...(newStage !== undefined ? { stage: newStage } : {}) } : prev);
-    }
-
-    if (!localStorage.getItem('token')) {
-      alert('Not signed-in: change saved locally only.');
-      return;
-    }
-
-    const payload = { status: newStatus };
-    if (newStage !== undefined) payload.stage = newStage;
-
-    const res = await apiFetch(`/api/responses/${encodeURIComponent(responseId)}/status`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    if (res && res.updatedResp) {
-      // authoritative update from backend
-      setResponses(prev => prev.map(r => r.id === responseId ? res.updatedResp : r));
-      if (selectedResponse && selectedResponse.id === responseId) setSelectedResponse(res.updatedResp);
-    } else {
+  async function updateCandidateStatus(responseId, newStatus) {
+    try {
+      setResponses(prev => prev.map(r => r.id === responseId ? { ...r, status: newStatus } : r));
+      if (!localStorage.getItem('token')) {
+        alert('Not signed-in: status changed locally only.');
+        return;
+      }
+      const payload = { status: newStatus };
+      const res = await apiFetch(`/api/responses/${encodeURIComponent(responseId)}/status`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (res && res.updatedResp) {
+        setResponses(prev => prev.map(r => r.id === responseId ? res.updatedResp : r));
+      } else {
+        await loadResponses();
+      }
+    } catch (err) {
+      console.error('Failed to update candidate status', err);
+      alert('Status update failed: ' + (err?.body?.error || err.message || 'unknown'));
       await loadResponses();
     }
-  } catch (err) {
-    console.error('Failed to update candidate status/stage', err);
-    alert('Status/Stage update failed: ' + (err?.body?.error || err.message || 'unknown'));
-    await loadResponses();
-    // refresh modal if open
-    if (selectedResponse && selectedResponse.id === responseId) {
-      try {
-        const fresh = await apiFetch(`/api/responses/${encodeURIComponent(responseId)}`);
-        if (fresh) setSelectedResponse(fresh);
-      } catch (e) { /* ignore */ }
-    }
   }
-}
-
-
-
-    // Use server-provided mapping if available; fallback to building set from responses
-  function getStatusesForStage(stage, currentStatus) {
-    if (stage && stageStatusMapping && stageStatusMapping[stage]) {
-      return stageStatusMapping[stage];
-    }
-    // fallback: gather unique statuses from existing responses (so UI still offers something)
-    const set = new Set();
-    responses.forEach(r => { if (r.status) set.add(r.status); });
-    if (currentStatus && !set.has(currentStatus)) set.add(currentStatus);
-    if (set.size) return Array.from(set);
-    return [currentStatus || "Applied", "Pending", "Scheduled", "Rejected", "Offer Accepted", "Offered", "Joined"];
-  }
-
 
   /* -------------------------
      Toggle / Enable-Disable logic & propagation
@@ -1505,40 +1459,37 @@ async function updateCandidateStatus(responseId, newStatus, newStage = undefined
                             </div>
 
                             <div className="w-[200px] flex flex-col items-end">
-  <div className="text-xs text-gray-500 mb-1">Stage</div>
-  <div className="font-medium mb-3">{(resp.stage || resp.currentStage || resp.current_stage) || '—'}</div>
+                              <div className="text-xs text-gray-500 mb-1">Status</div>
+                              <select
+                                onClick={(e) => e.stopPropagation()}
+                                value={resp.status || 'Applied'}
+                                onChange={(e) => updateCandidateStatus(resp.id, e.target.value)}
+                                className="border p-2 rounded"
+                              >
+                                <option>Applied</option>
+                                <option>Screening</option>
+                                <option>Interview</option>
+                                <option>Offer</option>
+                                <option>Hired</option>
+                                <option>Rejected</option>
+                              </select>
 
-  <div className="text-xs text-gray-500 mb-1">Status</div>
-  <select
-    onClick={(e) => e.stopPropagation()}
-    value={resp.status || 'Applied'}
-    onChange={(e) => updateCandidateStatus(resp.id, e.target.value)}
-    className="border p-2 rounded"
-  >
-    {(() => {
-      // determine stage from response (try likely field names)
-      const stage = resp.currentStage || resp.stage || resp.current_stage || null;
-      const allowed = getStatusesForStage(stage, resp.status);
-      return allowed.map(s => <option key={s} value={s}>{s}</option>);
-    })()}
-  </select>
-
-  <div className="mt-3 text-xs">
-    <label className="inline-flex items-center gap-2">
-      <input
-        onClick={(e) => e.stopPropagation()}
-        type="checkbox"
-        checked={!resp.is_deleted}
-        onChange={(e) => {
-          const toDeleted = !e.target.checked;
-          toggleResponseDeleted(resp.id, toDeleted);
-        }}
-      />
-      <span className="text-xs">{resp.is_deleted ? 'Disabled' : 'Active'}</span>
-    </label>
-  </div>
-</div>
-
+                              <div className="mt-3 text-xs">
+                                <label className="inline-flex items-center gap-2">
+                                  <input
+                                    onClick={(e) => e.stopPropagation()}
+                                    type="checkbox"
+                                    checked={!resp.is_deleted}
+                                    onChange={(e) => {
+                                      const toDeleted = !e.target.checked;
+                                      toggleResponseDeleted(resp.id, toDeleted);
+                                    }}
+                                  />
+                                  <span className="text-xs">{resp.is_deleted ? 'Disabled' : 'Active'}</span>
+                                </label>
+                              </div>
+                            </div>
+                          </div>
 
                           <div className="absolute right-6 bottom-4 text-sm text-gray-500">
                             Applied at: {resp.createdAt ? new Date(resp.createdAt).toLocaleString() : ''}
@@ -1547,6 +1498,7 @@ async function updateCandidateStatus(responseId, newStatus, newStage = undefined
                       );
                     })}
 
+                    <div style={{ height: 40 }} />
                   </div>
                 </div>
               </div>
@@ -1994,118 +1946,117 @@ async function updateCandidateStatus(responseId, newStatus, newStage = undefined
       )}
 
 
-{/* Response Details Modal */}
-{showResponseModal && selectedResponse && (
-  <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-60">
-    <div className="bg-white rounded-lg p-6 w-[820px] max-h-[86vh] overflow-auto shadow-xl">
-      <div className="flex items-start justify-between mb-4">
-        <div>
-          <h3 className="text-xl font-semibold">Candidate details</h3>
-          <div className="text-sm text-gray-500">{selectedResponse.id}</div>
-        </div>
-        <div className="flex items-center gap-3">
-          <button onClick={closeResponseModal} className="px-3 py-1 border rounded">Close</button>
-        </div>
-      </div>
+            {/* Response Details Modal */}
+       {showResponseModal && selectedResponse && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-60">
+         <div className="bg-white rounded-lg p-6 w-[820px] max-h-[86vh] overflow-auto shadow-xl">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h3 className="text-xl font-semibold">Candidate details</h3>
+                <div className="text-sm text-gray-500">{selectedResponse.id}</div>
+              </div>
+              <div className="flex items-center gap-3">
+                <button onClick={closeResponseModal} className="px-3 py-1 border rounded">Close</button>
+              </div>
+            </div>
 
-      <div className="flex gap-6">
-        {/* Left column: candidate basic fields */}
-        <div className="w-2/3">
-          <div className="mb-4">
-            <div className="text-xs text-gray-500">Name</div>
-            <div className="font-medium">{selectedResponse.fullName || (selectedResponse.answers && (selectedResponse.answers.fullname || selectedResponse.answers.name)) || '—'}</div>
-          </div>
-
-          <div className="mb-4">
-            <div className="text-xs text-gray-500">Email</div>
-            <div className="font-medium break-all">{selectedResponse.email || (selectedResponse.answers && selectedResponse.answers.email) || '—'}</div>
-          </div>
-
-          <div className="mb-4">
-            <div className="text-xs text-gray-500">Phone</div>
-            <div className="font-medium">{selectedResponse.phone || (selectedResponse.answers && selectedResponse.answers[CORE_QUESTIONS.phone.id]) || '—'}</div>
-          </div>
-
-          <div className="mb-4">
-            <div className="text-xs text-gray-500">College / Organization</div>
-            <div className="font-medium">{extractCandidateCollege(selectedResponse) || '—'}</div>
-          </div>
-
-          <div className="mb-4">
-            <div className="text-xs text-gray-500">Applied for</div>
-            <div className="font-medium">{openings.find(o => o.id === selectedResponse.openingId)?.title || selectedResponse.openingId || '—'}</div>
-          </div>
-
-          <div className="mt-4">
-            <div className="text-xs text-gray-500">All captured answers</div>
-            <div className="mt-2 border rounded p-3 bg-gray-50 max-h-[40vh] overflow-auto">
-              {selectedResponse.answers && Object.keys(selectedResponse.answers).length ? (
-                <div className="space-y-3">
-                  {Object.entries(selectedResponse.answers).map(([k, v]) => (
-                    <div key={k} className="text-sm">
-                      <div className="text-xs text-gray-400">{k}</div>
-                      <div className="font-medium break-words">{Array.isArray(v) ? v.join(', ') : (typeof v === 'object' ? JSON.stringify(v) : String(v))}</div>
-                    </div>
-                  ))}
+            <div className="flex gap-6">
+              {/* Left column: candidate basic fields */}
+              <div className="w-2/3">
+                <div className="mb-4">
+                  <div className="text-xs text-gray-500">Name</div>
+                  <div className="font-medium">{selectedResponse.fullName || (selectedResponse.answers && (selectedResponse.answers.fullname || selectedResponse.answers.name)) || '—'}</div>
                 </div>
-              ) : (
-                <div className="text-xs text-gray-400">No structured answers found. Check raw fields below.</div>
-              )}
-            </div>
-          </div>
 
-          <div className="mt-4 text-xs text-gray-400">
-            <div>Resume link: {selectedResponse.resumeLink ? <a href={selectedResponse.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">Open</a> : '—'}</div>
-            <div className="mt-1">Source: <span className="font-medium">{selectedResponse.source || 'unknown'}</span></div>
-            <div className="mt-1">Applied at: <span className="font-medium">{selectedResponse.createdAt ? new Date(selectedResponse.createdAt).toLocaleString() : '—'}</span></div>
+                <div className="mb-4">
+                  <div className="text-xs text-gray-500">Email</div>
+                  <div className="font-medium break-all">{selectedResponse.email || (selectedResponse.answers && selectedResponse.answers.email) || '—'}</div>
+                </div>
+
+                <div className="mb-4">
+                  <div className="text-xs text-gray-500">Phone</div>
+                  <div className="font-medium">{selectedResponse.phone || (selectedResponse.answers && selectedResponse.answers[CORE_QUESTIONS.phone.id]) || '—'}</div>
+                </div>
+
+                <div className="mb-4">
+                  <div className="text-xs text-gray-500">College / Organization</div>
+                  <div className="font-medium">{extractCandidateCollege(selectedResponse) || '—'}</div>
+                </div>
+
+                <div className="mb-4">
+                  <div className="text-xs text-gray-500">Applied for</div>
+                  <div className="font-medium">{openings.find(o => o.id === selectedResponse.openingId)?.title || selectedResponse.openingId || '—'}</div>
+                </div>
+
+                <div className="mt-4">
+                  <div className="text-xs text-gray-500">All captured answers</div>
+                  <div className="mt-2 border rounded p-3 bg-gray-50 max-h-[40vh] overflow-auto">
+                    {selectedResponse.answers && Object.keys(selectedResponse.answers).length ? (
+                      <div className="space-y-3">
+                        {Object.entries(selectedResponse.answers).map(([k, v]) => (
+                          <div key={k} className="text-sm">
+                            <div className="text-xs text-gray-400">{k}</div>
+                            <div className="font-medium break-words">{Array.isArray(v) ? v.join(', ') : (typeof v === 'object' ? JSON.stringify(v) : String(v))}</div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-gray-400">No structured answers found. Check raw fields below.</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-4 text-xs text-gray-400">
+                  <div>Resume link: {selectedResponse.resumeLink ? <a href={selectedResponse.resumeLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">Open</a> : '—'}</div>
+                  <div className="mt-1">Source: <span className="font-medium">{selectedResponse.source || 'unknown'}</span></div>
+                  <div className="mt-1">Applied at: <span className="font-medium">{selectedResponse.createdAt ? new Date(selectedResponse.createdAt).toLocaleString() : '—'}</span></div>
+                </div>
+              </div>
+
+              {/* Right column: profile score + quick actions */}
+              <aside className="w-1/3">
+                <div className="text-xs text-gray-500 mb-2">Candidate Profile Score</div>
+                <div className="flex flex-col items-center justify-center border rounded p-4 bg-white">
+                  {/* simple visual circle - css inline svg for simplicity */}
+                  <div style={{ width: 110, height: 110 }} className="flex items-center justify-center mb-3">
+                    <svg viewBox="0 0 36 36" className="w-[110px] h-[110px]">
+                      <path d="M18 2.0845
+                        a 15.9155 15.9155 0 0 1 0 31.831
+                        a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="#eee" strokeWidth="2.5"/>
+                      <path
+                        d="M18 2.0845
+                          a 15.9155 15.9155 0 0 1 0 31.831"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.5"
+                        strokeDasharray={`${localProfileScore}, 100`}
+                        strokeLinecap="round"
+                        style={{ color: localProfileScore > 70 ? '#16a34a' : localProfileScore > 40 ? '#f59e0b' : '#ef4444' }}
+                      />
+                      <text x="18" y="20.5" fontSize="7" textAnchor="middle" fill="#111" fontWeight="600">{localProfileScore}%</text>
+                    </svg>
+                  </div>
+
+                  <div className="text-xs text-gray-500 mb-2">Preview / manual adjust (UI only)</div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={localProfileScore}
+                    onChange={(e) => setLocalProfileScore(Number(e.target.value))}
+                    className="w-full"
+                    onClick={(e) => e.stopPropagation()}
+                  />
+
+                  <div className="mt-4 w-full">
+                    <button onClick={(e) => { e.stopPropagation(); alert('Placeholder: you can add actions like "Shortlist" or "Send email" here.'); }} className="w-full px-3 py-2 bg-blue-600 text-white rounded">Quick Action</button>
+                  </div>
+                </div>
+              </aside>
+            </div>
           </div>
         </div>
-
-        {/* Right column: profile score + quick actions */}
-        <aside className="w-1/3">
-          <div className="text-xs text-gray-500 mb-2">Candidate Profile Score</div>
-          <div className="flex flex-col items-center justify-center border rounded p-4 bg-white">
-            {/* simple visual circle - css inline svg for simplicity */}
-            <div style={{ width: 110, height: 110 }} className="flex items-center justify-center mb-3">
-              <svg viewBox="0 0 36 36" className="w-[110px] h-[110px]">
-                <path d="M18 2.0845
-                  a 15.9155 15.9155 0 0 1 0 31.831
-                  a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="#eee" strokeWidth="2.5"/>
-                <path
-                  d="M18 2.0845
-                    a 15.9155 15.9155 0 0 1 0 31.831"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeDasharray={`${localProfileScore}, 100`}
-                  strokeLinecap="round"
-                  style={{ color: localProfileScore > 70 ? '#16a34a' : localProfileScore > 40 ? '#f59e0b' : '#ef4444' }}
-                />
-                <text x="18" y="20.5" fontSize="7" textAnchor="middle" fill="#111" fontWeight="600">{localProfileScore}%</text>
-              </svg>
-            </div>
-
-            <div className="text-xs text-gray-500 mb-2">Preview / manual adjust (UI only)</div>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              value={localProfileScore}
-              onChange={(e) => setLocalProfileScore(Number(e.target.value))}
-              className="w-full"
-              onClick={(e) => e.stopPropagation()}
-            />
-
-            <div className="mt-4 w-full">
-              <button onClick={(e) => { e.stopPropagation(); alert('Placeholder: you can add actions like "Shortlist" or "Send email" here.'); }} className="w-full px-3 py-2 bg-blue-600 text-white rounded">Quick Action</button>
-            </div>
-          </div>
-        </aside>
-      </div>
-    </div>
-  </div>
-)}
-
+      )}
 
       {/* Public apply modal */}
       {publicView && (
@@ -2270,16 +2221,16 @@ function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, total
             />
           ) : q.id === CORE_QUESTIONS.phone.id || q.label.toLowerCase().includes("phone") ? (
             <input
-  name={q.id}
-  type="tel"
-  value={values[q.id] || ""}
-  onChange={e => updateValue(q.id, e.target.value)}
-  required={q.required}
-  pattern="^\\d{10,11}$"
-  inputMode="numeric"
-  title="Enter 10 to 11 digits"
-  className="w-full border p-2 rounded-md"
-/>
+              name={q.id}
+              type="tel"
+              value={values[q.id] || ""}
+              onChange={e => updateValue(q.id, e.target.value)}
+              required={q.required}
+              pattern="^\d{7,15}$"
+              inputMode="numeric"
+              title="Enter 7 to 15 digits"
+              className="w-full border p-2 rounded-md"
+            />
           ) : (
             <input
               name={q.id}
