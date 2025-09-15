@@ -262,6 +262,25 @@ async function connectMongo() {
   }
 }
 
+/** ---------- Startup migration helper: ensure is_deleted exists ---------- **/
+async function ensureIsDeletedField() {
+  if (!db) return;
+  const collections = ['openings', 'forms', 'responses'];
+  for (const col of collections) {
+    try {
+      const res = await db.collection(col).updateMany(
+        { is_deleted: { $exists: false } },
+        { $set: { is_deleted: false } }
+      );
+      const matched = res.matchedCount !== undefined ? res.matchedCount : (res.n || 0);
+      const modified = res.modifiedCount !== undefined ? res.modifiedCount : (res.nModified || 0);
+      console.log(`[migration:is_deleted] ${col}: matched=${matched}, modified=${modified}`);
+    } catch (err) {
+      console.error(`[migration:is_deleted] error on ${col}`, err && err.message);
+    }
+  }
+}
+
 /** ---------- Normalizers ---------- **/
 function normalizeDoc(doc) { if (!doc) return doc; const copy = { ...doc }; delete copy._id; return copy; }
 
@@ -281,6 +300,8 @@ async function getOpeningFromStore(id) {
   return arr.find(o => o.id === id);
 }
 async function createOpeningInStore(op) {
+  // ensure is_deleted default exists
+  if (op.is_deleted === undefined) op.is_deleted = false;
   if (db) { await db.collection('openings').insertOne(op); return op; }
   const arr = readJsonFile(OPENINGS_FILE, []);
   arr.unshift(op);
@@ -288,14 +309,18 @@ async function createOpeningInStore(op) {
   return op;
 }
 async function updateOpeningInStore(id, fields) {
+  // only persist is_deleted if explicitly provided (caller controls it)
+  // if fields.is_deleted is undefined, we don't alter the field
+  const patch = { ...fields };
+  if (patch.is_deleted === undefined) delete patch.is_deleted;
   if (db) {
-    await db.collection('openings').updateOne({ id }, { $set: fields });
+    await db.collection('openings').updateOne({ id }, { $set: patch });
     return normalizeDoc(await db.collection('openings').findOne({ id }));
   }
   const arr = readJsonFile(OPENINGS_FILE, []);
   const idx = arr.findIndex(o => o.id === id);
   if (idx === -1) return null;
-  arr[idx] = { ...arr[idx], ...fields };
+  arr[idx] = { ...arr[idx], ...patch };
   writeJsonFileAtomic(OPENINGS_FILE, arr);
   return arr[idx];
 }
@@ -342,6 +367,7 @@ async function getFormForOpeningFromStore(openingId) {
   return (forms && forms.length) ? forms[0] : null;
 }
 async function createFormInStore(form) {
+  if (form.is_deleted === undefined) form.is_deleted = false;
   if (db) { await db.collection('forms').insertOne(form); return form; }
   const arr = readJsonFile(FORMS_FILE, []);
   arr.push(form);
@@ -349,14 +375,16 @@ async function createFormInStore(form) {
   return form;
 }
 async function updateFormInStore(id, patch) {
+  const p = { ...patch };
+  if (p.is_deleted === undefined) delete p.is_deleted;
   if (db) {
-    await db.collection('forms').updateOne({ id }, { $set: patch });
+    await db.collection('forms').updateOne({ id }, { $set: p });
     return normalizeDoc(await db.collection('forms').findOne({ id }));
   }
   const arr = readJsonFile(FORMS_FILE, []);
   const idx = arr.findIndex(f => f.id === id);
   if (idx === -1) return null;
-  arr[idx] = { ...arr[idx], ...patch, updated_at: new Date().toISOString() };
+  arr[idx] = { ...arr[idx], ...p, updated_at: new Date().toISOString() };
   writeJsonFileAtomic(FORMS_FILE, arr);
   return arr[idx];
 }
@@ -418,13 +446,18 @@ async function deleteQuestionInStore(id) {
 }
 
 /* RESPONSES */
-async function listResponsesFromStore() {
+async function listResponsesFromStore(query = {}) {
+  // accept optional query filter { openingId }
   if (db) {
-    const rows = await db.collection('responses').find({}).sort({ createdAt: -1 }).toArray();
+    const q = {};
+    if (query.openingId) q.openingId = query.openingId;
+    const rows = await db.collection('responses').find(q).sort({ createdAt: -1 }).toArray();
     return rows.map(normalizeDoc);
   }
   const data = readData();
-  return data.responses || [];
+  const arr = data.responses || [];
+  if (query.openingId) return arr.filter(r => r.openingId === query.openingId);
+  return arr;
 }
 async function getResponseFromStore(id) {
   if (db) return normalizeDoc(await db.collection('responses').findOne({ id }));
@@ -432,6 +465,7 @@ async function getResponseFromStore(id) {
   return (data.responses || []).find(r => r.id === id);
 }
 async function createResponseInStore(resp) {
+  if (resp.is_deleted === undefined) resp.is_deleted = false;
   if (db) { await db.collection('responses').insertOne(resp); return resp; }
   const data = readData();
   data.responses.unshift(resp);
@@ -439,14 +473,16 @@ async function createResponseInStore(resp) {
   return resp;
 }
 async function updateResponseInStore(id, patch) {
+  const p = { ...patch };
+  if (p.is_deleted === undefined) delete p.is_deleted;
   if (db) {
-    await db.collection('responses').updateOne({ id }, { $set: patch });
+    await db.collection('responses').updateOne({ id }, { $set: p });
     return normalizeDoc(await db.collection('responses').findOne({ id }));
   }
   const data = readData();
   const idx = (data.responses || []).findIndex(r => r.id === id);
   if (idx === -1) return null;
-  data.responses[idx] = { ...data.responses[idx], ...patch };
+  data.responses[idx] = { ...data.responses[idx], ...p };
   writeData(data);
   return data.responses[idx];
 }
@@ -489,7 +525,7 @@ app.get('/api/openings/:id', authMiddleware, async (req, res) => {
 app.post('/api/openings', authMiddleware, async (req, res) => {
   try {
     const payload = req.body || {};
-    const op = { id: `op_${Date.now()}`, title: payload.title || 'Untitled', location: payload.location || 'Remote', department: payload.department || '', preferredSources: Array.isArray(payload.preferredSources) ? payload.preferredSources : (payload.preferredSources ? payload.preferredSources.split(',') : []), durationMins: payload.durationMins || 30, schema: payload.schema || null, createdAt: new Date().toISOString() };
+    const op = { id: `op_${Date.now()}`, title: payload.title || 'Untitled', location: payload.location || 'Remote', department: payload.department || '', preferredSources: Array.isArray(payload.preferredSources) ? payload.preferredSources : (payload.preferredSources ? payload.preferredSources.split(',') : []), durationMins: payload.durationMins || 30, schema: payload.schema || null, createdAt: new Date().toISOString(), is_deleted: false };
     await createOpeningInStore(op);
     return res.json(op);
   } catch (err) { console.error('POST /api/openings', err); return res.status(500).json({ error: 'server_error' }); }
@@ -497,7 +533,7 @@ app.post('/api/openings', authMiddleware, async (req, res) => {
 app.put('/api/openings/:id', authMiddleware, async (req, res) => {
   try {
     const id = req.params.id;
-    const fields = {}; ['title','location','department','preferredSources','durationMins','schema'].forEach(f => { if (req.body[f] !== undefined) fields[f] = req.body[f]; });
+    const fields = {}; ['title','location','department','preferredSources','durationMins','schema','is_deleted'].forEach(f => { if (req.body[f] !== undefined) fields[f] = req.body[f]; });
     const updated = await updateOpeningInStore(id, fields);
     if (!updated) return res.status(404).json({ error: 'opening_not_found' });
     return res.json(updated);
@@ -525,7 +561,7 @@ app.post('/api/forms', authMiddleware, async (req, res) => {
     if (!op) return res.status(400).json({ error: 'invalid_openingId' });
     const id = `form_${Date.now()}`;
     const now = new Date().toISOString();
-    const newForm = { id, openingId, data: data || {}, created_at: now, updated_at: now };
+    const newForm = { id, openingId, data: data || {}, created_at: now, updated_at: now, is_deleted: false };
     await createFormInStore(newForm);
     return res.status(201).json(newForm);
   } catch (err) { console.error('POST /api/forms', err); return res.status(500).json({ error: 'server_error' }); }
@@ -534,6 +570,7 @@ app.put('/api/forms/:id', authMiddleware, async (req, res) => {
   try {
     const id = req.params.id;
     const patch = req.body.data !== undefined ? { data: req.body.data, updated_at: new Date().toISOString() } : { updated_at: new Date().toISOString() };
+    if (req.body.is_deleted !== undefined) patch.is_deleted = req.body.is_deleted;
     const updated = await updateFormInStore(id, patch);
     if (!updated) return res.status(404).json({ error: 'form_not_found' });
     return res.json(updated);
@@ -591,13 +628,34 @@ app.delete('/api/questions/:id', authMiddleware, async (req, res) => {
 });
 
 /* Responses endpoints */
+// Support optional query ?openingId= to return only responses for a given opening
 app.get('/api/responses', authMiddleware, async (req, res) => {
-  try { const rows = await listResponsesFromStore(); return res.json(rows || []); }
-  catch (err) { console.error('GET /api/responses', err); return res.status(500).json({ error: 'server_error' }); }
+  try {
+    const openingId = req.query.openingId;
+    const rows = await listResponsesFromStore(openingId ? { openingId } : {});
+    return res.json(rows || []);
+  } catch (err) { console.error('GET /api/responses', err); return res.status(500).json({ error: 'server_error' }); }
 });
 app.get('/api/responses/:id', authMiddleware, async (req, res) => {
   try { const r = await getResponseFromStore(req.params.id); if (!r) return res.status(404).json({ error: 'response_not_found' }); return res.json(r); }
   catch (err) { console.error('GET /api/responses/:id', err); return res.status(500).json({ error: 'server_error' }); }
+});
+
+// Generic update for a response (used by frontend to update fields like is_deleted)
+app.put('/api/responses/:id', authMiddleware, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const patch = { ...req.body };
+    // protect id field
+    delete patch.id;
+    patch.updatedAt = new Date().toISOString();
+    const updated = await updateResponseInStore(id, patch);
+    if (!updated) return res.status(404).json({ error: 'response_not_found' });
+    return res.json({ ok: true, updated });
+  } catch (err) {
+    console.error('PUT /api/responses/:id error', err && err.stack);
+    return res.status(500).json({ error: 'server_error' });
+  }
 });
 
 // Update a candidate's status (persist to DB/files + update sheet row if known)
@@ -657,6 +715,58 @@ app.put('/api/responses/:id/status', authMiddleware, async (req, res) => {
   }
 });
 
+/** ---------- Toggle endpoints (is_deleted + cascade) ---------- **/
+
+// Toggle opening is_deleted and cascade to forms + responses
+app.patch('/api/openings/:id/toggle-delete', authMiddleware, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { is_deleted } = req.body;
+    const opening = await getOpeningFromStore(id);
+    if (!opening) return res.status(404).json({ error: 'opening_not_found' });
+
+    const newVal = typeof is_deleted === 'boolean' ? is_deleted : !opening.is_deleted;
+
+    // update opening
+    await updateOpeningInStore(id, { is_deleted: newVal, updatedAt: new Date().toISOString() });
+
+    // cascade forms
+    const forms = await listFormsFromStore(id);
+    for (const f of forms) {
+      await updateFormInStore(f.id, { is_deleted: newVal, updated_at: new Date().toISOString() });
+    }
+
+    // cascade responses
+    const responses = await listResponsesFromStore();
+    const filtered = responses.filter(r => r.openingId === id);
+    for (const r of filtered) {
+      await updateResponseInStore(r.id, { is_deleted: newVal, updatedAt: new Date().toISOString() });
+    }
+
+    return res.json({ ok: true, openingId: id, is_deleted: newVal });
+  } catch (err) {
+    console.error('PATCH /api/openings/:id/toggle-delete error', err);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// Toggle response is_deleted independently
+app.patch('/api/responses/:id/toggle-delete', authMiddleware, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const response = await getResponseFromStore(id);
+    if (!response) return res.status(404).json({ error: 'response_not_found' });
+
+    const newVal = typeof req.body.is_deleted === 'boolean' ? req.body.is_deleted : !response.is_deleted;
+    const updated = await updateResponseInStore(id, { is_deleted: newVal, updatedAt: new Date().toISOString() });
+
+    return res.json({ ok: true, responseId: id, is_deleted: newVal, updated });
+  } catch (err) {
+    console.error('PATCH /api/responses/:id/toggle-delete error', err);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
+
 /* Public endpoints for openings/schema - work with OPENINGS_FILE or DB */
 app.get('/public/openings', async (req, res) => {
   try { const rows = await listOpeningsFromStore(); return res.json(rows || []); }
@@ -665,7 +775,7 @@ app.get('/public/openings', async (req, res) => {
 app.post('/public/openings', async (req, res) => {
   try {
     const payload = req.body || {};
-    const op = { id: `op_${Date.now()}`, title: payload.title || 'Untitled', location: payload.location || 'Remote', department: payload.department || '', preferredSources: Array.isArray(payload.preferredSources) ? payload.preferredSources : (payload.preferredSources ? payload.preferredSources.split(',') : []), durationMins: payload.durationMins || 30, schema: payload.schema || null, createdAt: new Date().toISOString() };
+    const op = { id: `op_${Date.now()}`, title: payload.title || 'Untitled', location: payload.location || 'Remote', department: payload.department || '', preferredSources: Array.isArray(payload.preferredSources) ? payload.preferredSources : (payload.preferredSources ? payload.preferredSources.split(',') : []), durationMins: payload.durationMins || 30, schema: payload.schema || null, createdAt: new Date().toISOString(), is_deleted: false };
     await createOpeningInStore(op);
     return res.json(op);
   } catch (err) { console.error('POST /public/openings', err); return res.status(500).json({ error: 'server_error' }); }
@@ -882,7 +992,8 @@ app.post('/api/apply', upload.any(), async (req, res) => {
       answers: labelAnswers,
       createdAt: new Date().toISOString(),
       status: 'Applied',
-      sheetRange: null
+      sheetRange: null,
+      is_deleted: false
     };
 
     // Prepare sheet row.
@@ -925,10 +1036,16 @@ app.post('/api/apply', upload.any(), async (req, res) => {
 // Health
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-/** ---------- STARTUP: try Mongo, fallback to files ---------- **/
+/** ---------- STARTUP: try Mongo, run migration, fallback to files ---------- **/
 connectMongo()
-  .then(() => {
-    console.log('[startup] Mongo attempt finished (connected or verified). Starting HTTP server...');
+  .then(async () => {
+    console.log('[startup] Mongo attempt finished (connected or verified). Running startup migrations...');
+    try {
+      await ensureIsDeletedField();
+    } catch (err) {
+      console.warn('[startup] ensureIsDeletedField failed', err && err.message);
+    }
+    console.log('[startup] Starting HTTP server...');
     app.listen(PORT, () => {
       console.log(`Backend listening on ${PORT}`);
     });
