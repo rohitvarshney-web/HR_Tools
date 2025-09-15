@@ -2271,16 +2271,16 @@ function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, total
             />
           ) : q.id === CORE_QUESTIONS.phone.id || q.label.toLowerCase().includes("phone") ? (
             <input
-              name={q.id}
-              type="tel"
-              value={values[q.id] || ""}
-              onChange={e => updateValue(q.id, e.target.value)}
-              required={q.required}
-              pattern="^\d{7,15}$"
-              inputMode="numeric"
-              title="Enter 7 to 15 digits"
-              className="w-full border p-2 rounded-md"
-            />
+  name={q.id}
+  type="tel"
+  value={values[q.id] || ""}
+  onChange={e => updateValue(q.id, e.target.value)}
+  required={q.required}
+  pattern="^\\d{10,11}$"
+  inputMode="numeric"
+  title="Enter 10 to 11 digits"
+  className="w-full border p-2 rounded-md"
+/>
           ) : (
             <input
               name={q.id}
