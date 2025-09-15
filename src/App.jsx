@@ -435,21 +435,21 @@ export default function App() {
     setShowEdit(false);
   }
 
-  async function handleDeleteOpening(id) {
-    if (!confirm("Delete this opening?")) return;
-    try {
-      if (localStorage.getItem('token')) {
-        await apiFetch(`/api/openings/${id}`, { method: 'DELETE' });
-        setOpenings(s => s.filter(op => op.id !== id));
-        await loadForms();
-      } else {
-        setOpenings(s => s.filter(op => op.id !== id));
-        setForms(f => { const copy = { ...f }; delete copy[id]; return copy; });
-      }
-    } catch (err) {
-      alert('Delete failed: ' + (err?.body?.error || err.message));
-    }
-  }
+  // async function handleDeleteOpening(id) {
+  //   if (!confirm("Delete this opening?")) return;
+  //   try {
+  //     if (localStorage.getItem('token')) {
+  //       await apiFetch(`/api/openings/${id}`, { method: 'DELETE' });
+  //       setOpenings(s => s.filter(op => op.id !== id));
+  //       await loadForms();
+  //     } else {
+  //       setOpenings(s => s.filter(op => op.id !== id));
+  //       setForms(f => { const copy = { ...f }; delete copy[id]; return copy; });
+  //     }
+  //   } catch (err) {
+  //     alert('Delete failed: ' + (err?.body?.error || err.message));
+  //   }
+  // }
 
   function addQuestion(openingId, q) {
     const question = { ...q, id: q.id || uuidv4(), validation: q.validation || {}, pageBreak: q.pageBreak || false };
@@ -1339,7 +1339,7 @@ export default function App() {
                             }} />
                             <span className="text-xs">{op.is_deleted ? 'Disabled' : 'Active'}</span>
                           </label>
-                          <button onClick={() => handleDeleteOpening(op.id)} className="text-red-600 flex items-center gap-1"><Icon name="trash" /> Delete</button>
+{/*                           <button onClick={() => handleDeleteOpening(op.id)} className="text-red-600 flex items-center gap-1"><Icon name="trash" /> Delete</button> */}
                         </div>
                       </div>
                     ))}
