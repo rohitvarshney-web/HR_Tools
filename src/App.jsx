@@ -231,21 +231,6 @@ export default function App() {
   const [confirmDisableOpeningId, setConfirmDisableOpeningId] = useState(null);
   const [confirmDisableOpeningName, setConfirmDisableOpeningName] = useState("");
 
-
-// ---- Insert this block RIGHT AFTER your state declarations and BEFORE the auth useEffect ----
-
-// Public referral route detection: if path starts with /referral show public page (no auth required)
-const isPublicReferralPath = (typeof window !== 'undefined') && window.location.pathname && window.location.pathname.startsWith('/referral');
-
-if (isPublicReferralPath) {
-  // Render a lightweight public referral view. Make sure you add the PublicReferralView component
-  // (I provided full code for it earlier — place it near the bottom of this file).
-  return <PublicReferralView apiBase={API} />;
-}
-// ---- end inserted block ----
-
-  
-
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tokenFromUrl = params.get('token');
@@ -1211,9 +1196,6 @@ if (isPublicReferralPath) {
             <div onClick={() => setActiveTab("overview")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'overview' ? 'bg-gray-800' : ''}`}>{<Icon name="menu" />} Overview</div>
             <div onClick={() => setActiveTab("jobs")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'jobs' ? 'bg-gray-800' : ''}`}>Jobs</div>
             <div onClick={() => setActiveTab("hiring")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'hiring' ? 'bg-gray-800' : ''}`}>Hiring</div>
-            <div onClick={() => setActiveTab("referral")} className={`flex items-center gap-3 py-2 px-3 rounded-md cursor-pointer ${activeTab === 'referral' ? 'bg-gray-800' : ''}`}>Referral</div>
-
-
           </nav>
         </div>
       </aside>
@@ -1410,42 +1392,6 @@ if (isPublicReferralPath) {
             </div>
           </>
         )}
-
-
-        {activeTab === "referral" && (
-  <>
-    <div className="flex items-center justify-between mb-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Referral Link</h1>
-        <div className="text-sm text-gray-500 mt-1">
-          Share this single link so people can refer candidates for any open job.
-        </div>
-      </div>
-      <button
-        onClick={() => {
-          const link = `${window.location.origin}/referral`;
-          navigator.clipboard.writeText(link).then(() => alert("Referral link copied"));
-        }}
-        className="px-3 py-2 border rounded text-sm"
-      >
-        Copy referral link
-      </button>
-    </div>
-
-    <div className="grid md:grid-cols-2 gap-6">
-      {openings.map(op => (
-        <div key={op.id} className="bg-white p-4 rounded shadow">
-          <div className="font-semibold">{op.title}</div>
-          <div className="text-xs text-gray-500">{op.department} • {op.location}</div>
-          <div className="text-xs text-gray-400 mt-1">ID: {op.id}</div>
-        </div>
-      ))}
-    </div>
-  </>
-)}
-
-
-        
 
         {activeTab === "hiring" && (
           <>
@@ -2318,181 +2264,4 @@ function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, total
     </>
   );
 }
-
-function PublicReferralView({ apiBase }) {
-  const [openings, setOpenings] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [submittingFor, setSubmittingFor] = useState(null); // openingId currently submitting
-  const [formState, setFormState] = useState({}); // { [openingId]: { name, email, phone, file } }
-  const [message, setMessage] = useState(null);
-
-  useEffect(() => {
-    async function loadPublicOpenings() {
-      try {
-        const res = await fetch(`${apiBase}/public/openings`);
-        const json = await res.json();
-        setOpenings(json || []);
-      } catch (err) {
-        console.error('Failed to load public openings', err);
-      } finally {
-        setLoading(false);
-      }
-    }
-    loadPublicOpenings();
-  }, [apiBase]);
-
-  // If ?opening= is provided, filter to that opening first
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const op = params.get('opening');
-    if (op && openings.length) {
-      // ensure the desired opening is first in UI
-      const idx = openings.findIndex(o => o.id === op);
-      if (idx > 0) {
-        const copy = [...openings];
-        const [match] = copy.splice(idx, 1);
-        copy.unshift(match);
-        setOpenings(copy);
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openings.length]); // run once when openings loaded
-
-  function updateField(openingId, key, value) {
-    setFormState(prev => ({ ...prev, [openingId]: { ...(prev[openingId] || {}), [key]: value } }));
-  }
-
-  async function submitReferral(openingId) {
-    const st = formState[openingId] || {};
-    const name = (st.name || '').trim();
-    const file = st.file || null;
-    const email = (st.email || '').trim();
-    if (!name) { alert('Please enter candidate name'); return; }
-    if (!file) { alert('Please attach resume file'); return; }
-
-    setSubmittingFor(openingId);
-    setMessage(null);
-
-    try {
-      const fd = new FormData();
-      fd.append('opening', openingId);
-      fd.append('src', 'referral');
-      fd.append('fullName', name);
-      if (email) fd.append('email', email);
-      // attach file under q_resume + also safe names
-      fd.append('q_resume', file, file.name);
-      fd.append('resume', file, file.name);
-      fd.append('resumeFile', file, file.name);
-      fd.append('cv', file, file.name);
-
-      const res = await fetch(`${apiBase}/api/apply?opening=${encodeURIComponent(openingId)}&src=referral`, {
-        method: 'POST',
-        body: fd
-      });
-      const text = await res.text().catch(()=>null);
-      let data = null;
-      if (text) {
-        try { data = JSON.parse(text); } catch(e) { /* ignore */ }
-      }
-      if (!res.ok) {
-        const errMsg = data?.error || data?.message || `Server returned ${res.status}`;
-        throw new Error(errMsg);
-      }
-      setMessage({ type: 'success', text: 'Submitted successfully. Thank you!' });
-      // reset form for this opening
-      setFormState(prev => ({ ...prev, [openingId]: {} }));
-    } catch (err) {
-      console.error('Referral submit failed', err);
-      setMessage({ type: 'error', text: 'Submission failed: ' + (err.message || 'unknown') });
-      alert('Submission failed: ' + (err.message || 'unknown'));
-    } finally {
-      setSubmittingFor(null);
-    }
-  }
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div>Loading openings...</div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-gray-50 flex items-start justify-center p-6">
-      <div className="w-full max-w-4xl">
-        <div className="bg-white p-6 rounded shadow mb-6">
-          <h1 className="text-2xl font-semibold">Refer a candidate</h1>
-          <p className="text-sm text-gray-600 mt-2">Drop a resume and candidate name for any of the open roles below. Submissions will be recorded and the file uploaded.</p>
-          <div className="mt-3 text-xs text-gray-500">Tip: share the URL with `?opening=<openingId>` to open a specific job directly.</div>
-        </div>
-
-        {message ? (
-          <div className={`mb-4 p-3 rounded ${message.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-            {message.text}
-          </div>
-        ) : null}
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {openings.map(op => {
-            const st = formState[op.id] || {};
-            return (
-              <div key={op.id} className="bg-white p-4 rounded shadow">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <div className="font-semibold">{op.title}</div>
-                    <div className="text-sm text-gray-500">{op.department} • {op.location}</div>
-                    <div className="text-xs text-gray-400 mt-1">Job ID: {op.id}</div>
-                  </div>
-                  <div className="text-right text-xs">
-                    <div>Live responses: <strong>{/* not essential here */}</strong></div>
-                    <div className="mt-2">
-                      <button onClick={() => {
-                        const link = `${window.location.origin}/referral?opening=${encodeURIComponent(op.id)}`;
-                        navigator.clipboard.writeText(link).then(()=>alert('Referral link copied to clipboard'));
-                      }} className="px-2 py-1 border rounded text-xs">Copy referral link</button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-4 space-y-3">
-                  <div>
-                    <label className="text-xs text-gray-600 block">Candidate name</label>
-                    <input value={st.name || ''} onChange={(e)=>updateField(op.id, 'name', e.target.value)} className="w-full border p-2 rounded" placeholder="Full name" />
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-gray-600 block">Email (optional)</label>
-                    <input value={st.email || ''} onChange={(e)=>updateField(op.id, 'email', e.target.value)} className="w-full border p-2 rounded" placeholder="candidate@example.com" />
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-gray-600 block">Resume (PDF / DOCX)</label>
-                    <input type="file" onChange={(e)=>updateField(op.id, 'file', e.target.files && e.target.files[0] ? e.target.files[0] : null)} className="mt-1" />
-                  </div>
-
-                  <div className="flex items-center justify-between mt-2">
-                    <div className="text-xs text-gray-500">Source: referral</div>
-                    <div>
-                      <button
-                        onClick={() => submitReferral(op.id)}
-                        disabled={submittingFor === op.id}
-                        className="px-3 py-2 bg-blue-600 text-white rounded text-sm"
-                      >
-                        {submittingFor === op.id ? 'Submitting...' : 'Submit referral'}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="mt-8 text-center text-sm text-gray-500">If you have any trouble submitting, contact the administrator.</div>
-      </div>
-    </div>
-  );
-}
-
 
