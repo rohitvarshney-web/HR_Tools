@@ -167,7 +167,7 @@ export default function App() {
   const [forms, setForms] = useState({});
   const [responses, setResponses] = useState([]);
   const [questionBank, setQuestionBank] = useState([]);
-  const [stageStatusMapping, setStageStatusMapping] = useState({});
+
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
 
@@ -268,14 +268,6 @@ export default function App() {
       await loadResponses();
       await loadForms();
       await loadQuestionBank();
-      // load stage->status mapping from backend (protected)
-      try {
-        const mapping = await apiFetch('/api/stage-status-mapping');
-        setStageStatusMapping(mapping || {});
-      } catch (err) {
-        console.warn('Could not load stage-status mapping', err);
-        setStageStatusMapping({});
-      }
     } catch (err) {
       console.error('fetchProfile', err);
       localStorage.removeItem('token');
@@ -346,15 +338,7 @@ export default function App() {
     formObj.meta.is_deleted = !!formObj.meta.is_deleted;
     return formObj;
   }
- // Returns allowed statuses for a given stage (fallback if mapping absent)
-  function getAllowedStatusesForStage(stage) {
-    if (!stage) return ['Pending', 'Applied', 'Rejected'];
-    const allowed = stageStatusMapping && stageStatusMapping[stage];
-    if (Array.isArray(allowed) && allowed.length) return allowed;
-    // sensible fallback list (used when mapping missing or unknown stage)
-    return ['Pending', 'Screening', 'Scheduled', 'Feedback Pending', 'Offered', 'Offer Accepted', 'Rejected', 'Candidate Withdrew'];
-  }
-  
+
   /* -------------------------
      Loaders for openings / responses / forms / question bank
   ------------------------- */
@@ -875,30 +859,18 @@ export default function App() {
   /* -------------------------
      Hiring management helpers
   ------------------------- */
-    async function updateCandidateStatus(responseId, newStatus) {
+  async function updateCandidateStatus(responseId, newStatus) {
     try {
-      // optimistic UI update
       setResponses(prev => prev.map(r => r.id === responseId ? { ...r, status: newStatus } : r));
-
       if (!localStorage.getItem('token')) {
         alert('Not signed-in: status changed locally only.');
         return;
       }
-
-      // look up current stage from local state so backend can validate
-      const resp = responses.find(r => r.id === responseId) || {};
-      const payload = { status: newStatus, stage: resp.stage || resp.currentStage || 'Applied' };
-
-      const res = await apiFetch(`/api/responses/${encodeURIComponent(responseId)}/status`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
+      const payload = { status: newStatus };
+      const res = await apiFetch(`/api/responses/${encodeURIComponent(responseId)}/status`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (res && res.updatedResp) {
         setResponses(prev => prev.map(r => r.id === responseId ? res.updatedResp : r));
       } else {
-        // fallback: reload from server to ensure consistency
         await loadResponses();
       }
     } catch (err) {
@@ -907,7 +879,6 @@ export default function App() {
       await loadResponses();
     }
   }
-
 
   /* -------------------------
      Toggle / Enable-Disable logic & propagation
@@ -1486,19 +1457,21 @@ export default function App() {
                                 <span className="text-gray-500 break-all text-xs">{resp.id}</span>
                               </div>
                             </div>
-                            
-                            <div className="w-[200px] flex flex-col items-end">
-                              <div className="text-xs text-gray-500 mb-1">Stage</div>
-                              <div className="text-sm font-medium mb-2">{resp.stage || 'Applied'}</div>
 
+                            <div className="w-[200px] flex flex-col items-end">
                               <div className="text-xs text-gray-500 mb-1">Status</div>
                               <select
                                 onClick={(e) => e.stopPropagation()}
-                                value={resp.status || (getAllowedStatusesForStage(resp.stage)[0] || '')}
+                                value={resp.status || 'Applied'}
                                 onChange={(e) => updateCandidateStatus(resp.id, e.target.value)}
                                 className="border p-2 rounded"
                               >
-                                {getAllowedStatusesForStage(resp.stage).map(s => <option key={s} value={s}>{s}</option>)}
+                                <option>Applied</option>
+                                <option>Screening</option>
+                                <option>Interview</option>
+                                <option>Offer</option>
+                                <option>Hired</option>
+                                <option>Rejected</option>
                               </select>
 
                               <div className="mt-3 text-xs">
@@ -2040,127 +2013,50 @@ export default function App() {
                 </div>
               </div>
 
-             {/* Right column: Stage + Status + profile score + quick actions */}
-<aside className="w-1/3">
+              {/* Right column: profile score + quick actions */}
+              <aside className="w-1/3">
+                <div className="text-xs text-gray-500 mb-2">Candidate Profile Score</div>
+                <div className="flex flex-col items-center justify-center border rounded p-4 bg-white">
+                  {/* simple visual circle - css inline svg for simplicity */}
+                  <div style={{ width: 110, height: 110 }} className="flex items-center justify-center mb-3">
+                    <svg viewBox="0 0 36 36" className="w-[110px] h-[110px]">
+                      <path d="M18 2.0845
+                        a 15.9155 15.9155 0 0 1 0 31.831
+                        a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="#eee" strokeWidth="2.5"/>
+                      <path
+                        d="M18 2.0845
+                          a 15.9155 15.9155 0 0 1 0 31.831"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.5"
+                        strokeDasharray={`${localProfileScore}, 100`}
+                        strokeLinecap="round"
+                        style={{ color: localProfileScore > 70 ? '#16a34a' : localProfileScore > 40 ? '#f59e0b' : '#ef4444' }}
+                      />
+                      <text x="18" y="20.5" fontSize="7" textAnchor="middle" fill="#111" fontWeight="600">{localProfileScore}%</text>
+                    </svg>
+                  </div>
 
-  {/* Stage selector */}
-  <div className="mb-4">
-    <div className="text-xs text-gray-500">Stage</div>
-    <select
-      value={selectedResponse.stage || 'Applied'}
-      onChange={async (e) => {
-        const newStage = e.target.value;
-        // optimistic update
-        setSelectedResponse(prev => ({ ...prev, stage: newStage }));
-        setResponses(prev => prev.map(r => r.id === selectedResponse.id ? { ...r, stage: newStage } : r));
-        // persist to backend
-        if (localStorage.getItem('token')) {
-          try {
-            await apiFetch(`/api/responses/${encodeURIComponent(selectedResponse.id)}`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ stage: newStage })
-            });
-          } catch (err) {
-            console.error('Failed to update stage', err);
-            alert('Failed to update stage: ' + (err?.body?.error || err.message || 'unknown'));
-            await loadResponses();
-            const fresh = responses.find(r => r.id === selectedResponse.id);
-            if (fresh) setSelectedResponse(fresh);
-          }
-        } else {
-          alert('Not signed-in: stage changed locally only.');
-        }
-      }}
-      className="w-full p-2 border rounded mb-3"
-    >
-      {Object.keys(stageStatusMapping).length
-        ? Object.keys(stageStatusMapping).map(s => <option key={s} value={s}>{s}</option>)
-        : ['Applied','Introductory call','In-person Interview','Virtual Interview01','Virtual Interview02','Virtual Interview 03','Problem statement','Aptitude test','Final interview','Offer Stage','Joined'].map(s => <option key={s} value={s}>{s}</option>)
-      }
-    </select>
-  </div>
+                  <div className="text-xs text-gray-500 mb-2">Preview / manual adjust (UI only)</div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={localProfileScore}
+                    onChange={(e) => setLocalProfileScore(Number(e.target.value))}
+                    className="w-full"
+                    onClick={(e) => e.stopPropagation()}
+                  />
 
-  {/* Status selector */}
-  <div className="mb-4">
-    <div className="text-xs text-gray-500">Status</div>
-    <select
-      value={selectedResponse.status || (getAllowedStatusesForStage(selectedResponse.stage)[0] || '')}
-      onChange={async (e) => {
-        const newStatus = e.target.value;
-        // optimistic
-        setSelectedResponse(prev => ({ ...prev, status: newStatus }));
-        setResponses(prev => prev.map(r => r.id === selectedResponse.id ? { ...r, status: newStatus } : r));
-        if (localStorage.getItem('token')) {
-          try {
-            await apiFetch(`/api/responses/${encodeURIComponent(selectedResponse.id)}/status`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ status: newStatus, stage: selectedResponse.stage })
-            });
-          } catch (err) {
-            console.error('Failed to update status', err);
-            alert('Failed to update status: ' + (err?.body?.error || err.message || 'unknown'));
-            await loadResponses();
-            const fresh = responses.find(r => r.id === selectedResponse.id);
-            if (fresh) setSelectedResponse(fresh);
-          }
-        } else {
-          alert('Not signed-in: status changed locally only.');
-        }
-      }}
-      className="w-full p-2 border rounded"
-    >
-      {getAllowedStatusesForStage(selectedResponse.stage).map(s => <option key={s} value={s}>{s}</option>)}
-    </select>
-  </div>
-
-  {/* Profile score (unchanged) */}
-  <div className="text-xs text-gray-500 mb-2">Candidate Profile Score</div>
-  <div className="flex flex-col items-center justify-center border rounded p-4 bg-white">
-    <div style={{ width: 110, height: 110 }} className="flex items-center justify-center mb-3">
-      <svg viewBox="0 0 36 36" className="w-[110px] h-[110px]">
-        <path d="M18 2.0845
-          a 15.9155 15.9155 0 0 1 0 31.831
-          a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="#eee" strokeWidth="2.5"/>
-        <path
-          d="M18 2.0845
-            a 15.9155 15.9155 0 0 1 0 31.831"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.5"
-          strokeDasharray={`${localProfileScore}, 100`}
-          strokeLinecap="round"
-          style={{ color: localProfileScore > 70 ? '#16a34a' : localProfileScore > 40 ? '#f59e0b' : '#ef4444' }}
-        />
-        <text x="18" y="20.5" fontSize="7" textAnchor="middle" fill="#111" fontWeight="600">{localProfileScore}%</text>
-      </svg>
-    </div>
-
-    <div className="text-xs text-gray-500 mb-2">Preview / manual adjust (UI only)</div>
-    <input
-      type="range"
-      min="0"
-      max="100"
-      value={localProfileScore}
-      onChange={(e) => setLocalProfileScore(Number(e.target.value))}
-      className="w-full"
-      onClick={(e) => e.stopPropagation()}
-    />
-
-    <div className="mt-4 w-full">
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          alert('Placeholder: you can add actions like "Shortlist" or "Send email" here.');
-        }}
-        className="w-full px-3 py-2 bg-blue-600 text-white rounded"
-      >
-        Quick Action
-      </button>
-    </div>
-  </div>
-</aside>
+                  <div className="mt-4 w-full">
+                    <button onClick={(e) => { e.stopPropagation(); alert('Placeholder: you can add actions like "Shortlist" or "Send email" here.'); }} className="w-full px-3 py-2 bg-blue-600 text-white rounded">Quick Action</button>
+                  </div>
+                </div>
+              </aside>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Public apply modal */}
       {publicView && (
@@ -2330,9 +2226,9 @@ function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, total
               value={values[q.id] || ""}
               onChange={e => updateValue(q.id, e.target.value)}
               required={q.required}
-              pattern="^\d{10,11}$"
+              pattern="^\d{7,15}$"
               inputMode="numeric"
-              title="Enter 10 to 11 digits"
+              title="Enter 7 to 15 digits"
               className="w-full border p-2 rounded-md"
             />
           ) : (
@@ -2368,3 +2264,4 @@ function PageRenderer({ pageQuestions = [], allSchema = [], pageIndex = 0, total
     </>
   );
 }
+
